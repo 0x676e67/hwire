@@ -100,7 +100,10 @@ fn is_complete_fast(bytes: &[u8], prev_len: usize) -> bool {
             if bytes[i + 1..].chunks(3).next() == Some(&b"\n\r\n"[..]) {
                 return true;
             }
-        } else if b == b'\n' && bytes.get(i + 1) == Some(&b'\n') {
+        } else if b == b'\n'
+            && (bytes.get(i + 1) == Some(&b'\n')
+                || bytes[i + 1..].chunks(2).next() == Some(&b"\r\n"[..]))
+        {
             return true;
         }
     }
@@ -681,4 +684,22 @@ impl fmt::Write for FastWrite<'_> {
 #[inline]
 fn extend(dst: &mut Vec<u8>, data: &[u8]) {
     dst.extend_from_slice(data);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_complete_fast;
+
+    #[test]
+    fn test_is_complete_fast_lf_crlf() {
+        let s = b"GET / HTTP/1.1\r\na: b\n\r\n";
+        for n in 0..s.len() {
+            assert!(is_complete_fast(s, n), "{:?}; {}", s, n);
+        }
+
+        let s = b"GET / HTTP/1.1\r\na: b\n\r";
+        for n in 0..s.len() {
+            assert!(!is_complete_fast(s, n));
+        }
+    }
 }

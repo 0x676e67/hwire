@@ -1575,6 +1575,127 @@ mod conn {
     }
 
     #[tokio::test]
+    async fn http1_response_lf_crlf_terminator() {
+        struct SplitRead {
+            io: DuplexStream,
+            split: bool,
+        }
+
+        impl tokio::io::AsyncRead for SplitRead {
+            fn poll_read(
+                mut self: Pin<&mut Self>,
+                cx: &mut Context<'_>,
+                buf: &mut tokio::io::ReadBuf<'_>,
+            ) -> Poll<io::Result<()>> {
+                if self.split && buf.remaining() != 0 {
+                    let mut byte = [0];
+                    let mut part = tokio::io::ReadBuf::new(&mut byte);
+                    std::task::ready!(Pin::new(&mut self.io).poll_read(cx, &mut part))?;
+                    buf.put_slice(part.filled());
+                    Poll::Ready(Ok(()))
+                } else {
+                    Pin::new(&mut self.io).poll_read(cx, buf)
+                }
+            }
+        }
+
+        impl tokio::io::AsyncWrite for SplitRead {
+            fn poll_write(
+                mut self: Pin<&mut Self>,
+                cx: &mut Context<'_>,
+                buf: &[u8],
+            ) -> Poll<io::Result<usize>> {
+                Pin::new(&mut self.io).poll_write(cx, buf)
+            }
+
+            fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+                Pin::new(&mut self.io).poll_flush(cx)
+            }
+
+            fn poll_shutdown(
+                mut self: Pin<&mut Self>,
+                cx: &mut Context<'_>,
+            ) -> Poll<io::Result<()>> {
+                Pin::new(&mut self.io).poll_shutdown(cx)
+            }
+        }
+
+        for split in [false, true] {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                let (client_io, downstream) = tokio::io::duplex(1024);
+                let (upstream, server_io) = tokio::io::duplex(1024);
+                let relay = tokio::spawn(async move {
+                    let (mut request, mut response) = tokio::io::split(downstream);
+                    let (mut server_response, mut server_request) = tokio::io::split(upstream);
+                    let upload = tokio::spawn(async move {
+                        tokio::io::copy(&mut request, &mut server_request)
+                            .await
+                            .unwrap();
+                    });
+                    let mut head = Vec::new();
+                    while !head.ends_with(b"\r\n\r\n") {
+                        head.push(server_response.read_u8().await.unwrap());
+                    }
+                    // Hyper generates the response. Change only the last header's
+                    // line ending to exercise the full parser's bare-LF support.
+                    head.remove(head.len() - 4);
+                    assert!(head.ends_with(b"\n\r\n"));
+                    response.write_all(&head).await.unwrap();
+                    tokio::io::copy(&mut server_response, &mut response)
+                        .await
+                        .unwrap();
+                    response.shutdown().await.unwrap();
+                    upload.await.unwrap();
+                });
+                let server = tokio::spawn(async move {
+                    hyper::server::conn::http1::Builder::new()
+                        .keep_alive(false)
+                        .serve_connection(
+                            TokioIo::new(server_io),
+                            hyper::service::service_fn(|_request| async {
+                                Ok::<_, std::convert::Infallible>(
+                                    Response::builder()
+                                        .header("a", "b")
+                                        .body(Empty::<Bytes>::new())
+                                        .unwrap(),
+                                )
+                            }),
+                        )
+                        .await
+                        .unwrap();
+                });
+                let (mut client, connection) = conn::http1::Builder::default()
+                    .handshake(SplitRead {
+                        io: client_io,
+                        split,
+                    })
+                    .await
+                    .unwrap();
+                let connection = tokio::spawn(connection);
+                let response = client
+                    .try_send_request(Request::get("/").body(Empty::<Bytes>::new()).unwrap())
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), StatusCode::OK);
+                assert_eq!(response.headers()["a"], "b");
+                assert!(response
+                    .into_body()
+                    .collect()
+                    .await
+                    .unwrap()
+                    .to_bytes()
+                    .is_empty());
+                drop(client);
+                connection.await.unwrap().unwrap();
+                relay.await.unwrap();
+                server.await.unwrap();
+            })
+            .await
+            .expect("LF-CRLF response must parse regardless of read boundaries");
+        }
+    }
+
+    #[tokio::test]
     async fn http1_client_flushes_end_of_body_buffered_by_write_recheck() {
         /// Yields one data frame, then pends once, then ends the stream.
         ///
