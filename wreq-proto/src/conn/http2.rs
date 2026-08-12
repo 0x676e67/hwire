@@ -92,6 +92,8 @@ impl<B> SendRequest<B> {
 
     /// Waits until the dispatcher is ready
     ///
+    /// # Errors
+    ///
     /// If the associated connection is closed, this returns an Error.
     #[inline]
     pub async fn ready(&mut self) -> Result<()> {
@@ -125,7 +127,7 @@ where
     ///
     /// Returns a future that if successful, yields the `Response`.
     ///
-    /// # Error
+    /// # Errors
     ///
     /// If there was an error before trying to serialize the request to the
     /// connection, the message will be returned as part of this error.
@@ -263,6 +265,10 @@ where
     ///
     /// Note, if [`Connection`] is not `await`-ed, [`SendRequest`] will
     /// do nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the HTTP/2 connection handshake fails.
     pub async fn handshake<T, B>(self, io: T) -> Result<(SendRequest<B>, Connection<T, B, Ex>)>
     where
         T: AsyncRead + AsyncWrite + Unpin,
