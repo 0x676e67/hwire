@@ -16,9 +16,25 @@
 //!
 //! # Cancel safety
 //!
-//! Request futures support cancellation by dropping them before completion.
-//! See [`conn::http1::SendRequest::try_send_request`] and
-//! [`conn::http2::SendRequest::try_send_request`] for the effect on each protocol.
+//! Request futures support cancellation: dropping a future before it
+//! completes is the supported way to cancel the operation. The protocol in
+//! use changes what that cancellation actually does on the wire:
+//!
+//! - **HTTP/1** has no in-protocol way to abort a single request without affecting the shared
+//!   connection, so dropping an in-flight request future closes the underlying I/O when the
+//!   connection driver observes the cancellation. Any subsequent call on the same `SendRequest`
+//!   returns a `canceled` error; the connection cannot be reused.
+//! - **HTTP/2**, if a stream has been opened, resets the single stream with `RST_STREAM` (`CANCEL`
+//!   error code) and notifies the peer as its background tasks are driven rather than continuing to
+//!   deliver a response body that would be discarded. The shared connection stays usable for other
+//!   in-flight and future requests.
+//!
+//! Keep driving the connection and its background tasks to complete cancellation.
+//!
+//! See the documentation on individual futures — for example
+//! [`conn::http1::SendRequest::try_send_request`] and the equivalent
+//! in [`conn::http2::SendRequest::try_send_request`] — for the protocol-specific behavior on
+//! cancellation.
 
 #[macro_use]
 mod trace;
