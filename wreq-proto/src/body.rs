@@ -64,9 +64,9 @@
 //! [`BodyExt`]: https://docs.rs/http-body-util/latest/http_body_util/trait.BodyExt.html
 //! [`http_body::Body`]: https://docs.rs/http-body
 
+mod chan;
 mod incoming;
 mod length;
-mod watch;
 
 pub use self::incoming::Incoming;
 pub(crate) use self::{incoming::Sender, length::DecodedLength};
