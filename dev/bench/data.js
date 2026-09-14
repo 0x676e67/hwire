@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789404857060,
+  "lastUpdate": 1789405480751,
   "repoUrl": "https://github.com/0x676e67/wreq-proto",
   "entries": {
     "end_to_end": [
@@ -9179,6 +9179,114 @@ window.BENCHMARK_DATA = {
             "name": "http2_parallel_x10_res_1mb",
             "value": 5236340,
             "range": "± 137116.57",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gngppz@gmail.com",
+            "name": "0x676e67",
+            "username": "0x676e67"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1078de8873450b091579b04e49f10a112fdbb3ca",
+          "message": "docs(body): add streaming read examples (#64)\n\nShow how to process data and trailer frames while preserving back-pressure, and contrast that with intentionally collecting a bounded body in memory.\n\nCloses #2201\n\nBackport adaptation: use wreq_proto paths and import Bytes directly from\nbytes because the local body module does not re-export it.\n\nCo-authored-by: Morax <100508620+fzlzjerry@users.noreply.github.com>",
+          "timestamp": "2026-09-15T01:01:48+08:00",
+          "tree_id": "7ffcecfb0090fa1845adcb09f3779a23b86f7745",
+          "url": "https://github.com/0x676e67/wreq-proto/commit/1078de8873450b091579b04e49f10a112fdbb3ca"
+        },
+        "date": 1789405478641,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "http1_consecutive_x1_both_100kb",
+            "value": 48777,
+            "range": "± 702.06",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http1_consecutive_x1_both_10mb",
+            "value": 3321167,
+            "range": "± 155649.92",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http1_consecutive_x1_empty",
+            "value": 18198,
+            "range": "± 207.72",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http1_consecutive_x1_req_10b",
+            "value": 19198,
+            "range": "± 221.91",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_consecutive_x1_empty",
+            "value": 22858,
+            "range": "± 321.61",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_consecutive_x1_req_100kb",
+            "value": 75353,
+            "range": "± 1123.99",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_consecutive_x1_req_10b",
+            "value": 40999909,
+            "range": "± 3572.34",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_empty",
+            "value": 62948,
+            "range": "± 778.68",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_req_10kb_100_chunks",
+            "value": 14971339,
+            "range": "± 16466691.24",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_req_10kb_100_chunks_adaptive_window",
+            "value": 6625955,
+            "range": "± 122595.61",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_req_10kb_100_chunks_max_window",
+            "value": 6498634,
+            "range": "± 191856.95",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_req_10mb",
+            "value": 88000794,
+            "range": "± 15617.94",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_res_10mb",
+            "value": 46891426,
+            "range": "± 312564.42",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_res_1mb",
+            "value": 4606723,
+            "range": "± 42131.50",
             "unit": "ns/iter"
           }
         ]
