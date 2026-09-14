@@ -15,7 +15,53 @@
 //! Additional implementations are available in [`http-body-util`][], such as `Full` or `Empty`
 //! bodies.
 //!
+//! ## Reading a body
+//!
+//! The [`BodyExt`][] extension trait provides an asynchronous way to read the
+//! frames of a body. A frame can contain either data or trailers:
+//!
+//! ```
+//! use http_body_util::BodyExt as _;
+//! use wreq_proto::body::Incoming;
+//!
+//! async fn read_body(mut body: Incoming) -> Result<(), wreq_proto::Error> {
+//!     while let Some(frame) = body.frame().await {
+//!         let frame = frame?;
+//!
+//!         if let Some(data) = frame.data_ref() {
+//!             println!("received {} bytes", data.len());
+//!         }
+//!
+//!         if let Some(trailers) = frame.trailers_ref() {
+//!             println!("received trailers: {trailers:?}");
+//!         }
+//!     }
+//!
+//!     Ok(())
+//! }
+//! ```
+//!
+//! A body only advances when it is polled. Processing each frame before
+//! polling for the next one preserves back-pressure on the connection.
+//!
+//! If a body is known to be small, it can be collected into memory instead:
+//!
+//! ```
+//! use http_body_util::BodyExt as _;
+//! use bytes::Bytes;
+//! use wreq_proto::body::Incoming;
+//!
+//! /// Consider using `Limited` if the body is untrusted.
+//! async fn read_entire_body(body: Incoming) -> Result<Bytes, wreq_proto::Error> {
+//!     Ok(body.collect().await?.to_bytes())
+//! }
+//! ```
+//!
+//! Collecting buffers the whole body, so it should be avoided for large or
+//! untrusted bodies unless their size is limited.
+//!
 //! [`http-body-util`]: https://docs.rs/http-body-util
+//! [`BodyExt`]: https://docs.rs/http-body-util/latest/http_body_util/trait.BodyExt.html
 //! [`http_body::Body`]: https://docs.rs/http-body
 
 mod incoming;
