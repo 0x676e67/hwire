@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789107059707,
+  "lastUpdate": 1789349620985,
   "repoUrl": "https://github.com/0x676e67/wreq-proto",
   "entries": {
     "end_to_end": [
@@ -8963,6 +8963,114 @@ window.BENCHMARK_DATA = {
             "name": "http2_parallel_x10_res_1mb",
             "value": 5441364,
             "range": "± 66243.23",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gngppz@gmail.com",
+            "name": "0x676e67",
+            "username": "0x676e67"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "72a4b6160b54cf8ca33baafb3fb9230014f4782e",
+          "message": "perf(http2): reserve minimal send capacity when piping request bodies (#62)\n\nReserving the full chunk length makes every in-flight stream a heavyweight\nclaimant in the connection-window distribution for as long as it waits for\ncapacity, which is costly once the streams sharing a connection collectively\ndemand more than the window the peer advertises.\n\nThe chunk is still only reserved against once it is in hand, so capacity can\nnever be pinned by a body that produces nothing (#4003). h2 raises the\nrequested send capacity to the buffered length inside `send_data`, so the\ndemand eventually signalled to the peer is unchanged; only the transient claim\nheld while the stream waits for its first byte of capacity differs.\n\nBackport adaptation: the dependency is named http2 locally; its send_data\ncapacity behavior matches the upstream h2 implementation.\n\nCo-authored-by: Sander Saares <sander@saares.eu>",
+          "timestamp": "2026-09-14T09:30:51+08:00",
+          "tree_id": "f2c08973e3735f31d2a2a17968372c094b558b11",
+          "url": "https://github.com/0x676e67/wreq-proto/commit/72a4b6160b54cf8ca33baafb3fb9230014f4782e"
+        },
+        "date": 1789349619054,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "http1_consecutive_x1_both_100kb",
+            "value": 90761,
+            "range": "± 1441.40",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http1_consecutive_x1_both_10mb",
+            "value": 3946200,
+            "range": "± 225601.08",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http1_consecutive_x1_empty",
+            "value": 20971,
+            "range": "± 827.29",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http1_consecutive_x1_req_10b",
+            "value": 22682,
+            "range": "± 564.71",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_consecutive_x1_empty",
+            "value": 32573,
+            "range": "± 697.50",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_consecutive_x1_req_100kb",
+            "value": 101827,
+            "range": "± 1515.47",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_consecutive_x1_req_10b",
+            "value": 41000095,
+            "range": "± 40601.00",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_empty",
+            "value": 84310,
+            "range": "± 916.46",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_req_10kb_100_chunks",
+            "value": 15974312,
+            "range": "± 16420680.87",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_req_10kb_100_chunks_adaptive_window",
+            "value": 7849391,
+            "range": "± 86021.20",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_req_10kb_100_chunks_max_window",
+            "value": 7623960,
+            "range": "± 117761.65",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_req_10mb",
+            "value": 51457551,
+            "range": "± 1320880.31",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_res_10mb",
+            "value": 51427884,
+            "range": "± 489664.15",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_res_1mb",
+            "value": 5372599,
+            "range": "± 50961.99",
             "unit": "ns/iter"
           }
         ]
