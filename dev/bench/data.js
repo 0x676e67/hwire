@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789349620985,
+  "lastUpdate": 1789404857060,
   "repoUrl": "https://github.com/0x676e67/wreq-proto",
   "entries": {
     "end_to_end": [
@@ -9071,6 +9071,114 @@ window.BENCHMARK_DATA = {
             "name": "http2_parallel_x10_res_1mb",
             "value": 5372599,
             "range": "± 50961.99",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gngppz@gmail.com",
+            "name": "0x676e67",
+            "username": "0x676e67"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "361958c500ffc016400b9391d4d8599509cabdd4",
+          "message": "fix(http1): recognize `\\n\\r\\n` as a head terminator in the partial-read fast path (#63)\n\n`is_complete_fast` recognizes `\\r\\n\\r\\n` and `\\n\\n` as head terminators but not `\\n\\r\\n`, while the full parser (httparse) accepts all three. So a request whose head ends with `\\n\\r\\n` parses fine when it arrives in a single read, but stalls when it arrives split across reads: the fast path never reports the head complete and the connection keeps waiting for more bytes.\n\nThis extends the `\\n` branch to also accept a following `\\r\\n`, using the same panic-safe slicing idiom as the `\\r` branch. Added the `\\n\\r\\n` witness and the `\\n\\r` negative to `test_is_complete_fast`, plus a parse-level test documenting that the full parser accepts this terminator.\n\nCloses #4145\n\nBackport adaptation: retain the fast-scan positive and negative witnesses\nin a local unit test, and replace the server parse test with a wreq-proto\nclient receiving a Hyper-generated response through a transport that\nadjusts the final header line ending and tests whole and bytewise reads.\n\nCo-authored-by: Nam2ee <81401376+nam2ee@users.noreply.github.com>",
+          "timestamp": "2026-09-15T00:51:05+08:00",
+          "tree_id": "2caff653f229577002abd2e8e23db1641e3fb5c4",
+          "url": "https://github.com/0x676e67/wreq-proto/commit/361958c500ffc016400b9391d4d8599509cabdd4"
+        },
+        "date": 1789404855104,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "http1_consecutive_x1_both_100kb",
+            "value": 91468,
+            "range": "± 1248.12",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http1_consecutive_x1_both_10mb",
+            "value": 4680078,
+            "range": "± 314786.38",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http1_consecutive_x1_empty",
+            "value": 21609,
+            "range": "± 625.12",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http1_consecutive_x1_req_10b",
+            "value": 24205,
+            "range": "± 575.95",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_consecutive_x1_empty",
+            "value": 34056,
+            "range": "± 691.19",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_consecutive_x1_req_100kb",
+            "value": 104926,
+            "range": "± 1847.15",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_consecutive_x1_req_10b",
+            "value": 41000163,
+            "range": "± 25005.54",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_empty",
+            "value": 85249,
+            "range": "± 1336.32",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_req_10kb_100_chunks",
+            "value": 32397272,
+            "range": "± 16389328.33",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_req_10kb_100_chunks_adaptive_window",
+            "value": 7887585,
+            "range": "± 143757.58",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_req_10kb_100_chunks_max_window",
+            "value": 7611239,
+            "range": "± 116573.68",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_req_10mb",
+            "value": 96007198,
+            "range": "± 2513656.80",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_res_10mb",
+            "value": 52632222,
+            "range": "± 2182460.44",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_res_1mb",
+            "value": 5236340,
+            "range": "± 137116.57",
             "unit": "ns/iter"
           }
         ]
