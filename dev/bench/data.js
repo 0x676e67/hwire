@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789405480751,
+  "lastUpdate": 1789405752925,
   "repoUrl": "https://github.com/0x676e67/wreq-proto",
   "entries": {
     "end_to_end": [
@@ -9287,6 +9287,114 @@ window.BENCHMARK_DATA = {
             "name": "http2_parallel_x10_res_1mb",
             "value": 4606723,
             "range": "± 42131.50",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gngppz@gmail.com",
+            "name": "0x676e67",
+            "username": "0x676e67"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "51b58de2acb0096922fc340753b16937a4206c0e",
+          "message": "style(lib): fix missing_errors_doc lint (#65)\n\nRefs: #4071\n\nBackport adaptation: retain documentation for existing client connection APIs;\nomit the lint configuration and documentation for absent free handshake,\nsend_request, and Upgraded::downcast APIs. Document that the local HTTP/1\nbuilder handshake currently returns no error.\n\nCo-authored-by: Murilo Silva <zafkielc@gmail.com>",
+          "timestamp": "2026-09-15T01:06:11+08:00",
+          "tree_id": "f63b9a686314e4ae56ce4911aed8ca47494e28de",
+          "url": "https://github.com/0x676e67/wreq-proto/commit/51b58de2acb0096922fc340753b16937a4206c0e"
+        },
+        "date": 1789405751219,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "http1_consecutive_x1_both_100kb",
+            "value": 55059,
+            "range": "± 1164.15",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http1_consecutive_x1_both_10mb",
+            "value": 3456998,
+            "range": "± 196969.14",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http1_consecutive_x1_empty",
+            "value": 18202,
+            "range": "± 295.11",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http1_consecutive_x1_req_10b",
+            "value": 19199,
+            "range": "± 250.99",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_consecutive_x1_empty",
+            "value": 22696,
+            "range": "± 548.98",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_consecutive_x1_req_100kb",
+            "value": 80131,
+            "range": "± 2287.04",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_consecutive_x1_req_10b",
+            "value": 40999834,
+            "range": "± 4120.02",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_empty",
+            "value": 62010,
+            "range": "± 1013.79",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_req_10kb_100_chunks",
+            "value": 14785636,
+            "range": "± 16415269.33",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_req_10kb_100_chunks_adaptive_window",
+            "value": 6658886,
+            "range": "± 41392270.64",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_req_10kb_100_chunks_max_window",
+            "value": 6463229,
+            "range": "± 91236.41",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_req_10mb",
+            "value": 87000351,
+            "range": "± 624720.55",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_res_10mb",
+            "value": 45152315,
+            "range": "± 510541.79",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_res_1mb",
+            "value": 4640196,
+            "range": "± 102779.25",
             "unit": "ns/iter"
           }
         ]
