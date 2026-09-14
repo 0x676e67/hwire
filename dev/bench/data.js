@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789405752925,
+  "lastUpdate": 1789406002934,
   "repoUrl": "https://github.com/0x676e67/wreq-proto",
   "entries": {
     "end_to_end": [
@@ -9395,6 +9395,114 @@ window.BENCHMARK_DATA = {
             "name": "http2_parallel_x10_res_1mb",
             "value": 4640196,
             "range": "± 102779.25",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gngppz@gmail.com",
+            "name": "0x676e67",
+            "username": "0x676e67"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "2ce0cc8bf0c478094fd1b88054eb13eb4cd4414a",
+          "message": "docs(lib): expand crate-level cancel safety section with HTTP/1 vs HTTP/2 (#66)\n\nCloses #4054\n\nBackport adaptation: scope the documentation to request futures, use local\ntry_send_request links and transport-neutral I/O wording, and clarify that\nconnection/background tasks must be driven to complete cancellation and\nthat HTTP/2 resets apply to opened streams.\n\nCo-authored-by: MsfPablo <129399053+MsfPablo@users.noreply.github.com>",
+          "timestamp": "2026-09-15T01:10:25+08:00",
+          "tree_id": "5914197c370f2bc33cdf7dde39a31a59a3895700",
+          "url": "https://github.com/0x676e67/wreq-proto/commit/2ce0cc8bf0c478094fd1b88054eb13eb4cd4414a"
+        },
+        "date": 1789406001721,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "http1_consecutive_x1_both_100kb",
+            "value": 49236,
+            "range": "± 671.75",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http1_consecutive_x1_both_10mb",
+            "value": 4000869,
+            "range": "± 204780.30",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http1_consecutive_x1_empty",
+            "value": 18252,
+            "range": "± 834.34",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http1_consecutive_x1_req_10b",
+            "value": 19267,
+            "range": "± 1200.82",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_consecutive_x1_empty",
+            "value": 22899,
+            "range": "± 348.46",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_consecutive_x1_req_100kb",
+            "value": 76644,
+            "range": "± 5675.95",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_consecutive_x1_req_10b",
+            "value": 41000006,
+            "range": "± 4909.40",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_empty",
+            "value": 61910,
+            "range": "± 1190.40",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_req_10kb_100_chunks",
+            "value": 14928473,
+            "range": "± 16503992.53",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_req_10kb_100_chunks_adaptive_window",
+            "value": 6632382,
+            "range": "± 62124.69",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_req_10kb_100_chunks_max_window",
+            "value": 6562351,
+            "range": "± 95208.27",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_req_10mb",
+            "value": 87000206,
+            "range": "± 320341.15",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_res_10mb",
+            "value": 47124953,
+            "range": "± 2138052.72",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_res_1mb",
+            "value": 4751642,
+            "range": "± 80218.84",
             "unit": "ns/iter"
           }
         ]
