@@ -7,7 +7,7 @@ use std::{
 
 use bytes::{Buf, Bytes};
 use http::{
-    header::{HeaderValue, CONNECTION, TE},
+    header::{Entry, HeaderValue, CONNECTION, TE},
     HeaderMap, Method, Version,
 };
 use http_body::Frame;
@@ -567,10 +567,11 @@ where
 
     // Fix keep-alive when Connection: keep-alive header is not present
     fn fix_keep_alive(&mut self, head: &mut MessageHead<T::Outgoing>) {
-        let outgoing_is_keep_alive = head
-            .headers
-            .get(CONNECTION)
-            .is_some_and(headers::connection_keep_alive);
+        let connection_entry = head.headers.entry(CONNECTION);
+        let outgoing_is_keep_alive = match &connection_entry {
+            Entry::Occupied(entry) => entry.iter().any(headers::connection_keep_alive),
+            Entry::Vacant(_) => false,
+        };
 
         if !outgoing_is_keep_alive {
             match head.version {
@@ -579,10 +580,14 @@ where
                 Version::HTTP_10 => self.state.disable_keep_alive(),
                 // If response is version 1.1 and keep-alive is wanted, add
                 // Connection: keep-alive header when not present
-                Version::HTTP_11 if self.state.wants_keep_alive() => {
-                    head.headers
-                        .insert(CONNECTION, HeaderValue::from_static("keep-alive"));
-                }
+                Version::HTTP_11 if self.state.wants_keep_alive() => match connection_entry {
+                    Entry::Occupied(mut entry) => {
+                        entry.append(HeaderValue::from_static("keep-alive"));
+                    }
+                    Entry::Vacant(entry) => {
+                        entry.insert(HeaderValue::from_static("keep-alive"));
+                    }
+                },
                 _ => (),
             }
         }
@@ -601,8 +606,16 @@ where
             }
             Version::HTTP_11 => {
                 if let KA::Disabled = self.state.keep_alive.status() {
-                    head.headers
-                        .insert(CONNECTION, HeaderValue::from_static("close"));
+                    match head.headers.entry(CONNECTION) {
+                        Entry::Occupied(mut entry) => {
+                            if !entry.iter().any(headers::connection_close) {
+                                entry.append(HeaderValue::from_static("close"));
+                            }
+                        }
+                        Entry::Vacant(entry) => {
+                            entry.insert(HeaderValue::from_static("close"));
+                        }
+                    }
                 }
             }
             _ => (),
