@@ -562,7 +562,7 @@ impl Http2OptionsBuilder {
     ///
     /// See [Section 5.1.2] in the HTTP/2 spec for more details.
     ///
-    /// [Section 5.1.2]: https://http2.github.io/http2-spec/#rfc.section.5.1.2
+    /// [Section 5.1.2]: https://httpwg.org/specs/rfc7540.html#rfc.section.5.1.2
     #[inline]
     pub fn max_concurrent_streams(mut self, max: impl Into<Option<u32>>) -> Self {
         if let Some(max) = max.into() {
