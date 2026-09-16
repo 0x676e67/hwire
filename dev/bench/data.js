@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789576724807,
+  "lastUpdate": 1789576756589,
   "repoUrl": "https://github.com/0x676e67/wreq-proto",
   "entries": {
     "end_to_end": [
@@ -10151,6 +10151,114 @@ window.BENCHMARK_DATA = {
             "name": "http2_parallel_x10_res_1mb",
             "value": 5487823,
             "range": "± 70410.28",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gngppz@gmail.com",
+            "name": "0x676e67",
+            "username": "0x676e67"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "587b44bbb61fd8619779e7dea381e60911eac9be",
+          "message": "docs(client): fix HTTP/2 max concurrent stream link to spec (#80)\n\nBackport adaptation: apply the unchanged URL correction to the local\nHTTP/2 options builder, where max_concurrent_streams is defined.\n\nCo-authored-by: dentiny <dentinyhao@gmail.com>",
+          "timestamp": "2026-09-17T00:36:06+08:00",
+          "tree_id": "a31b6d1228f66da34c6fc0983571c169f5604f77",
+          "url": "https://github.com/0x676e67/wreq-proto/commit/587b44bbb61fd8619779e7dea381e60911eac9be"
+        },
+        "date": 1789576755695,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "http1_consecutive_x1_both_100kb",
+            "value": 68654,
+            "range": "± 899.84",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http1_consecutive_x1_both_10mb",
+            "value": 4247289,
+            "range": "± 150863.82",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http1_consecutive_x1_empty",
+            "value": 23586,
+            "range": "± 309.51",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http1_consecutive_x1_req_10b",
+            "value": 24899,
+            "range": "± 179.06",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_consecutive_x1_empty",
+            "value": 29747,
+            "range": "± 400.02",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_consecutive_x1_req_100kb",
+            "value": 98024,
+            "range": "± 1672.96",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_consecutive_x1_req_10b",
+            "value": 40999957,
+            "range": "± 7243.70",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_empty",
+            "value": 77817,
+            "range": "± 1638.39",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_req_10kb_100_chunks",
+            "value": 16777430,
+            "range": "± 16397158.39",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_req_10kb_100_chunks_adaptive_window",
+            "value": 8559239,
+            "range": "± 37389900.00",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_req_10kb_100_chunks_max_window",
+            "value": 8368964,
+            "range": "± 507501.36",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_req_10mb",
+            "value": 100999265,
+            "range": "± 624377.80",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_res_10mb",
+            "value": 60038322,
+            "range": "± 878556.16",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_res_1mb",
+            "value": 5888168,
+            "range": "± 72639.02",
             "unit": "ns/iter"
           }
         ]
