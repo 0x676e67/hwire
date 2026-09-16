@@ -1762,6 +1762,66 @@ mod conn {
         .expect("request terminator buffered by the write re-check must be flushed");
     }
 
+    // https://github.com/hyperium/hyper/issues/4195
+    #[tokio::test]
+    async fn http1_request_preserves_hop_by_hop_headers() {
+        for values in [vec!["close, x-hop"], vec!["x-hop", "ClOsE"]] {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                let (client_io, server_io) = tokio::io::duplex(1024);
+                let expected = values.clone();
+                let server = tokio::spawn(async move {
+                    hyper::server::conn::http1::Builder::new()
+                        .serve_connection(
+                            TokioIo::new(server_io),
+                            hyper::service::service_fn(
+                                move |request: Request<hyper::body::Incoming>| {
+                                    let actual = request
+                                        .headers()
+                                        .get_all("connection")
+                                        .iter()
+                                        .map(|v| v.to_str().unwrap())
+                                        .collect::<Vec<_>>();
+                                    assert_eq!(actual, expected);
+                                    assert_eq!(request.headers()["x-hop"], "...");
+                                    async {
+                                        Ok::<_, std::convert::Infallible>(Response::new(Empty::<
+                                            Bytes,
+                                        >::new(
+                                        )))
+                                    }
+                                },
+                            ),
+                        )
+                        .await
+                        .unwrap();
+                });
+                let (mut client, connection) = conn::http1::Builder::default()
+                    .handshake(client_io)
+                    .await
+                    .unwrap();
+                let connection = tokio::spawn(connection);
+                let mut request = Request::get("/")
+                    .header("x-hop", "...")
+                    .body(Empty::<Bytes>::new())
+                    .unwrap();
+                for value in values {
+                    request
+                        .headers_mut()
+                        .append("connection", value.parse().unwrap());
+                }
+                let response = client.try_send_request(request).await.unwrap();
+                assert_eq!(response.status(), StatusCode::OK);
+                response.into_body().collect().await.unwrap();
+                assert!(client.ready().await.is_err());
+                drop(client);
+                connection.await.unwrap().unwrap();
+                server.await.unwrap();
+            })
+            .await
+            .expect("hop-by-hop header test should finish");
+        }
+    }
+
     #[tokio::test]
     async fn http1_request_connection_close_disables_keep_alive() {
         for (connection_values, reusable) in [
