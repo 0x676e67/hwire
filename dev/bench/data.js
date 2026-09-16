@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789569952576,
+  "lastUpdate": 1789576724807,
   "repoUrl": "https://github.com/0x676e67/wreq-proto",
   "entries": {
     "end_to_end": [
@@ -10043,6 +10043,114 @@ window.BENCHMARK_DATA = {
             "name": "http2_parallel_x10_res_1mb",
             "value": 2888262,
             "range": "± 37245.87",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gngppz@gmail.com",
+            "name": "0x676e67",
+            "username": "0x676e67"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "a5e13003f61bf32234bb9195a4551f06fe1aedfe",
+          "message": "docs(rt): improve `rt` module overview (#79)\n\nBackport adaptation: use the local crate name, describe Tokio IO traits and\nwreq-rt adapters outside this module, and omit the Hyper-specific runtime\nguide link. Executor and timer descriptions retain the upstream wording.\n\nCo-authored-by: Sean McArthur <sean@seanmonstar.com>",
+          "timestamp": "2026-09-17T00:35:54+08:00",
+          "tree_id": "b04d6c7ca46e3564fcba0c8ef84c7fa03e483a06",
+          "url": "https://github.com/0x676e67/wreq-proto/commit/a5e13003f61bf32234bb9195a4551f06fe1aedfe"
+        },
+        "date": 1789576724162,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "http1_consecutive_x1_both_100kb",
+            "value": 91436,
+            "range": "± 2467.90",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http1_consecutive_x1_both_10mb",
+            "value": 6696471,
+            "range": "± 610572.34",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http1_consecutive_x1_empty",
+            "value": 21248,
+            "range": "± 496.77",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http1_consecutive_x1_req_10b",
+            "value": 23624,
+            "range": "± 578.36",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_consecutive_x1_empty",
+            "value": 34143,
+            "range": "± 1012.43",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_consecutive_x1_req_100kb",
+            "value": 104868,
+            "range": "± 10034.48",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_consecutive_x1_req_10b",
+            "value": 41000303,
+            "range": "± 24434.96",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_empty",
+            "value": 86193,
+            "range": "± 2510.39",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_req_10kb_100_chunks",
+            "value": 16278322,
+            "range": "± 8245932.36",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_req_10kb_100_chunks_adaptive_window",
+            "value": 16131702,
+            "range": "± 8447335.71",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_req_10kb_100_chunks_max_window",
+            "value": 7656867,
+            "range": "± 120774.35",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_req_10mb",
+            "value": 52367019,
+            "range": "± 2097354.31",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_res_10mb",
+            "value": 53947397,
+            "range": "± 817251.08",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_res_1mb",
+            "value": 5487823,
+            "range": "± 70410.28",
             "unit": "ns/iter"
           }
         ]
