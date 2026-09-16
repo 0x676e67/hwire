@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789491689235,
+  "lastUpdate": 1789569952576,
   "repoUrl": "https://github.com/0x676e67/wreq-proto",
   "entries": {
     "end_to_end": [
@@ -9935,6 +9935,114 @@ window.BENCHMARK_DATA = {
             "name": "http2_parallel_x10_res_1mb",
             "value": 3004770,
             "range": "± 293481.35",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gngppz@gmail.com",
+            "name": "0x676e67",
+            "username": "0x676e67"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e103ea095cdf3ec6eca2e40815f1e1691524cde8",
+          "message": "fix(http1): preserve hop-by-hop when setting close or keep-alive (#78)\n\nThis adjusts https://github.com/hyperium/hyper/pull/4110 to use `append` instead of `insert` when a nonzero number of \"connection\" headers are already present, and only if none of the existing headers already include the value being added.\n\nFixes https://github.com/hyperium/hyper/issues/4195\n\nBackport adaptation: use the local HTTP/1 module layout and replace the raw\nserver fixture with an upstream Hyper server, checking combined and repeated\nConnection fields and retaining the hop-by-hop header value.\n\nCo-authored-by: David Tolnay <dtolnay@gmail.com>",
+          "timestamp": "2026-09-16T22:42:54+08:00",
+          "tree_id": "0fe87d5a93b35e46fbd07a3e0b29a204b2e80291",
+          "url": "https://github.com/0x676e67/wreq-proto/commit/e103ea095cdf3ec6eca2e40815f1e1691524cde8"
+        },
+        "date": 1789569951667,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "http1_consecutive_x1_both_100kb",
+            "value": 29203,
+            "range": "± 264.41",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http1_consecutive_x1_both_10mb",
+            "value": 3257473,
+            "range": "± 190973.01",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http1_consecutive_x1_empty",
+            "value": 8544,
+            "range": "± 93.57",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http1_consecutive_x1_req_10b",
+            "value": 9517,
+            "range": "± 100.24",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_consecutive_x1_empty",
+            "value": 13245,
+            "range": "± 171.22",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_consecutive_x1_req_100kb",
+            "value": 38627,
+            "range": "± 691.36",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_consecutive_x1_req_10b",
+            "value": 40999981,
+            "range": "± 6999.06",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_empty",
+            "value": 54261,
+            "range": "± 1612.32",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_req_10kb_100_chunks",
+            "value": 11809634,
+            "range": "± 16339432.57",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_req_10kb_100_chunks_adaptive_window",
+            "value": 24056706,
+            "range": "± 16362155.77",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_req_10kb_100_chunks_max_window",
+            "value": 3573023,
+            "range": "± 67725.36",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_req_10mb",
+            "value": 27561396,
+            "range": "± 394448.11",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_res_10mb",
+            "value": 27005927,
+            "range": "± 227200.39",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_res_1mb",
+            "value": 2888262,
+            "range": "± 37245.87",
             "unit": "ns/iter"
           }
         ]
