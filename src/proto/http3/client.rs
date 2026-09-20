@@ -23,6 +23,7 @@ use crate::{
     body::{Incoming, Sender},
     dispatch::{Envelope, TrySendError},
     error::BoxError,
+    ext::OnPreserveHeader,
     Error, Result,
 };
 
@@ -156,7 +157,10 @@ pub(crate) async fn exchange<O, B>(
             length
         };
         let head = request.method() == Method::HEAD;
-        let (parts, body) = request.into_parts();
+        let (mut parts, body) = request.into_parts();
+        if let Some(header_sort) = parts.extensions.remove::<OnPreserveHeader>() {
+            header_sort.call(&mut parts.headers);
+        }
         let stream = sender
             .send_request(Request::from_parts(parts, ()))
             .await

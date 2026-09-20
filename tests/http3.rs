@@ -15,6 +15,8 @@ mod datagram;
 mod datagram_close;
 #[path = "http3/goaway.rs"]
 mod goaway;
+#[path = "http3/headers.rs"]
+mod headers;
 #[path = "http3/pause.rs"]
 mod pause;
 #[path = "http3/request_drop.rs"]
