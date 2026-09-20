@@ -133,3 +133,6 @@ incremental = false
 # PR #104 includes #103's lifecycle fixes and preserves QPACK Base after eviction.
 [patch.crates-io]
 http3 = { git = "https://github.com/0x676e67/http3", rev = "e7103dc594a88b8473a1f6af477c5e17266767cb" }
+# https://github.com/0x676e67/quic/pull/50: report stopped writes without connection credit.
+quic = { git = "https://github.com/0x676e67/quic", rev = "ce89cf67bf68a95598030b53f165ef71feed5f70" }
+quic-proto = { git = "https://github.com/0x676e67/quic", rev = "ce89cf67bf68a95598030b53f165ef71feed5f70" }

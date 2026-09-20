@@ -1103,8 +1103,7 @@ dependencies = [
 [[package]]
 name = "quic"
 version = "0.12.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b70e3b16fa5497dfd922f928341ccae420c73c9ba79d060bc1d9a9531d305182"
+source = "git+https://github.com/0x676e67/quic?rev=ce89cf67bf68a95598030b53f165ef71feed5f70#ce89cf67bf68a95598030b53f165ef71feed5f70"
 dependencies = [
  "bytes",
  "cfg_aliases",
@@ -1126,8 +1125,7 @@ dependencies = [
 [[package]]
 name = "quic-proto"
 version = "0.12.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a5f83dc13de0097d88834d418eb49574bcb63f86eb9bfb245b60e68cae404935"
+source = "git+https://github.com/0x676e67/quic?rev=ce89cf67bf68a95598030b53f165ef71feed5f70#ce89cf67bf68a95598030b53f165ef71feed5f70"
 dependencies = [
  "bytes",
  "getrandom 0.4.3",
