@@ -8,8 +8,8 @@ A low-level, asynchronous HTTP client protocol implementation for [wreq].
 
 ## Features
 
-- Client-side [HTTP/1](https://www.rfc-editor.org/rfc/rfc9112.html) and [HTTP/2](https://www.rfc-editor.org/rfc/rfc9113.html) implementations.
-- Optional [HTTP/3](https://www.rfc-editor.org/rfc/rfc9114.html) over [QUIC](https://www.rfc-editor.org/rfc/rfc9000.html).
+- [HTTP/1](https://www.rfc-editor.org/rfc/rfc9112.html) and [HTTP/2](https://www.rfc-editor.org/rfc/rfc9113.html) implementations.
+- Optional [HTTP/3](https://www.rfc-editor.org/rfc/rfc9114.html) over [QUIC](https://www.rfc-editor.org/rfc/rfc9000.html) implementations. 
 - Streaming bodies and trailers with backpressure.
 - [HTTP Upgrade](https://www.rfc-editor.org/rfc/rfc9110.html#name-upgrade) and [CONNECT](https://www.rfc-editor.org/rfc/rfc9110.html#name-connect) tunnels, including [HTTP/2 Extended CONNECT](https://www.rfc-editor.org/rfc/rfc8441.html).
 - Pluggable executor, timer and transport interfaces implemented by the caller.
