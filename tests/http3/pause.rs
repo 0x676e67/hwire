@@ -24,6 +24,7 @@ struct State {
     resumed: AtomicBool,
     blocked: Notify,
     credit: Notify,
+    received_fin: Notify,
     writer: AtomicWaker,
 }
 
@@ -61,6 +62,10 @@ impl Pause {
 
     pub async fn waiting_for_credit(&self) {
         self.0.credit.notified().await;
+    }
+
+    pub async fn received_fin(&self) {
+        self.0.received_fin.notified().await;
     }
 
     pub fn observers(&self) -> usize {
@@ -187,7 +192,11 @@ impl<T: RecvStream> RecvStream for Transport<T> {
         &mut self,
         cx: &mut Context<'_>,
     ) -> Poll<Result<Option<Self::Buf>, quic::StreamError>> {
-        self.inner.poll_data(cx)
+        let result = self.inner.poll_data(cx);
+        if matches!(&result, Poll::Ready(Ok(None))) {
+            self.pause.0.received_fin.notify_one();
+        }
+        result
     }
 
     fn stop_sending(&mut self, code: u64) {

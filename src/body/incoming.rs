@@ -32,7 +32,7 @@ enum Kind {
     },
     #[cfg(feature = "http3")]
     H3 {
-        recv: std::sync::Arc<dyn crate::proto::http3::body::RecvBody>,
+        rx: chan::Receiver,
         done: bool,
     },
     Empty,
@@ -73,10 +73,14 @@ impl Incoming {
     }
 
     #[cfg(feature = "http3")]
-    pub(crate) fn h3(recv: std::sync::Arc<dyn crate::proto::http3::body::RecvBody>) -> Self {
-        Self {
-            kind: Kind::H3 { recv, done: false },
-        }
+    pub(crate) fn h3() -> (Sender, Self) {
+        let (tx, rx) = chan::channel(false);
+        (
+            tx,
+            Self {
+                kind: Kind::H3 { rx, done: false },
+            },
+        )
     }
 
     pub(crate) fn h2(
@@ -172,24 +176,21 @@ impl Body for Incoming {
             }
             #[cfg(feature = "http3")]
             Kind::H3 {
-                ref mut recv,
+                ref mut rx,
                 ref mut done,
             } => {
                 if *done {
                     return Poll::Ready(None);
                 }
-                match ready!(recv.poll_frame(cx)) {
-                    Some(Ok(frame)) => {
-                        *done = frame.is_trailers();
-                        Poll::Ready(Some(Ok(frame)))
-                    }
+                match ready!(rx.poll_next(cx)) {
+                    Some(Ok(data)) => Poll::Ready(Some(Ok(Frame::data(data)))),
                     Some(Err(error)) => {
                         *done = true;
                         Poll::Ready(Some(Err(error)))
                     }
                     None => {
                         *done = true;
-                        Poll::Ready(None)
+                        Poll::Ready(rx.take_trailers().map(Frame::trailers).map(Ok))
                     }
                 }
             }
@@ -223,19 +224,6 @@ impl Body for Incoming {
                 }
             }
             Kind::Empty => SizeHint::with_exact(0),
-        }
-    }
-}
-
-#[cfg(feature = "http3")]
-impl Drop for Incoming {
-    fn drop(&mut self) {
-        if let Kind::H3 {
-            ref recv,
-            done: false,
-        } = self.kind
-        {
-            recv.cancel();
         }
     }
 }

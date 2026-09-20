@@ -2,13 +2,12 @@ use std::{
     future::poll_fn,
     pin::pin,
     sync::{Arc, OnceLock},
-    task::{Context, Poll},
+    task::Poll,
 };
 
 use bytes::{Buf, Bytes};
 use futures_util::{
     future::{select, try_join, Either},
-    task::AtomicWaker,
     TryFutureExt,
 };
 use http::{header, HeaderMap, Method, Request, Response, StatusCode};
@@ -21,7 +20,7 @@ use http_body::Body;
 
 use super::dispatch::{Active, Callback, Shared};
 use crate::{
-    body::Incoming,
+    body::{Incoming, Sender},
     dispatch::{Envelope, TrySendError},
     error::BoxError,
     Error, Result,
@@ -32,13 +31,16 @@ pub(super) const CHUNK: usize = 16 * 1024;
 pub(super) struct Failure {
     error: OnceLock<Arc<Error>>,
     connection: Arc<Shared>,
-    receiver: AtomicWaker,
 }
 
 pub(super) struct ResponseGuard<B> {
     pub(super) callback: Option<Callback<B>>,
     pub(super) failure: Arc<Failure>,
-    finished: bool,
+}
+
+pub(super) struct BodyGuard {
+    pub(super) sender: Option<Sender>,
+    pub(super) failure: Arc<Failure>,
 }
 
 pub(super) struct SendGuard<S: quic::SendStream<Bytes>> {
@@ -65,7 +67,6 @@ pub(crate) async fn exchange<O, B>(
 ) where
     O: quic::OpenStreams<Bytes>,
     O::BidiStream: quic::BidiStream<Bytes>,
-    <O::BidiStream as quic::BidiStream<Bytes>>::RecvStream: Send + 'static,
     B: Body,
     B::Error: Into<BoxError>,
 {
@@ -74,13 +75,11 @@ pub(crate) async fn exchange<O, B>(
     let failure = Arc::new(Failure {
         error: OnceLock::new(),
         connection: shared.clone(),
-        receiver: AtomicWaker::new(),
     });
     let cancel = callback.take_cancellation();
     let mut response = ResponseGuard {
         callback: Some(callback),
         failure: failure.clone(),
-        finished: false,
     };
     #[cfg(feature = "http3-datagram")]
     let datagram_cancellation = shared
@@ -284,7 +283,6 @@ pub(crate) async fn exchange<O, B>(
     if let Err(error) = result {
         failure.set(error);
     }
-    response.finished = true;
     // Envelope returns unstarted requests; ResponseGuard covers started tasks.
     drop(response);
     drop(active);
@@ -391,13 +389,14 @@ async fn response_headers<S: quic::RecvStream>(recv: &mut RecvGuard<S>) -> Resul
     Ok(headers)
 }
 
-async fn download<S: quic::RecvStream + Send + 'static, B>(
+async fn download<S: quic::RecvStream, B>(
     mut recv: RecvGuard<S>,
     response: &mut ResponseGuard<B>,
     head: bool,
     initial_response: Option<Response<()>>,
     failure: Arc<Failure>,
 ) -> Result<()> {
+    let mut budget = 0;
     let mut headers = match initial_response {
         Some(headers) => headers,
         None => response_headers(&mut recv).await?,
@@ -420,14 +419,73 @@ async fn download<S: quic::RecvStream + Send + 'static, B>(
         remaining = Some(0);
     }
     *headers.version_mut() = http::Version::HTTP_3;
-    let (incoming, completion) = super::body::incoming(recv, remaining, failure);
+    let (sender, incoming) = Incoming::h3();
+    let mut body = BodyGuard {
+        sender: Some(sender),
+        failure,
+    };
     let Some(callback) = response.callback.take() else {
         return Err(Error::new_canceled());
     };
     callback
         .try_send(Ok(headers.map(|()| incoming)))
         .map_err(|_| Error::new_canceled())?;
-    completion.await
+    let Some(sender) = body.sender.as_mut() else {
+        return Err(Error::new_canceled());
+    };
+    let transfer = async {
+        while let Some(mut data) = poll_fn(|cx| {
+            if sender.poll_closed(cx).is_ready() {
+                return Poll::Ready(Err(Error::new_canceled()));
+            }
+            recv.stream.poll_recv_data(cx).map_err(Error::new_h3)
+        })
+        .await?
+        {
+            consume_length(&mut remaining, data.remaining()).map_err(|reason| {
+                recv.code = Code::H3_MESSAGE_ERROR;
+                Error::new_h3(reason)
+            })?;
+            while data.has_remaining() {
+                poll_fn(|cx| sender.poll_ready(cx)).await?;
+                let size = data.remaining().min(CHUNK);
+                sender
+                    .send_data(data.copy_to_bytes(size))
+                    .map_err(|_| Error::new_canceled())?;
+                cooperate(&mut budget).await;
+            }
+            cooperate(&mut budget).await;
+        }
+        if remaining.is_some_and(|n| n != 0) {
+            recv.code = Code::H3_MESSAGE_ERROR;
+            return Err(Error::new_body("HTTP/3 body shorter than content-length"));
+        }
+        if let Some(trailers) = poll_fn(|cx| {
+            if sender.poll_closed(cx).is_ready() {
+                return Poll::Ready(Err(Error::new_canceled()));
+            }
+            recv.stream.poll_recv_trailers(cx).map_err(Error::new_h3)
+        })
+        .await?
+        {
+            sender
+                .send_trailers(trailers)
+                .map_err(|_| Error::new_canceled())?;
+        }
+        recv.finished = true;
+        #[cfg(feature = "http3-datagram")]
+        if let Some(datagrams) = &recv.datagrams {
+            datagrams.close_recv();
+        }
+        Ok(())
+    };
+    let result = transfer.await;
+    if let Err(error) = result {
+        body.failure.set(error);
+        return Err(body.failure.get());
+    }
+    body.sender.take();
+    Ok(())
 }
 
 fn validate_request<B>(request: &Request<B>) -> Result<()> {
@@ -498,7 +556,7 @@ fn content_length(headers: &HeaderMap) -> Result<Option<u64>> {
     Ok(length)
 }
 
-pub(super) fn consume_length(remaining: &mut Option<u64>, size: usize) -> Result<(), &'static str> {
+fn consume_length(remaining: &mut Option<u64>, size: usize) -> Result<(), &'static str> {
     if let Some(left) = remaining {
         *left = left
             .checked_sub(u64::try_from(size).map_err(|_| "body size overflow")?)
@@ -539,15 +597,6 @@ impl Failure {
                 .cloned()
                 .unwrap_or_else(|| Arc::new(error))
         });
-        self.receiver.wake();
-    }
-
-    pub(super) fn poll_error(&self, cx: &Context<'_>) -> Option<Error> {
-        self.receiver.register(cx.waker());
-        self.error
-            .get()
-            .or_else(|| self.connection.error.get())
-            .map(|error| Error::from_shared(error.clone()))
     }
 
     pub(super) fn get(&self) -> Error {
@@ -562,14 +611,21 @@ impl Failure {
 
 impl<B> Drop for ResponseGuard<B> {
     fn drop(&mut self) {
-        if !self.finished {
-            self.failure.set(self.failure.get());
-        }
         if let Some(callback) = self.callback.take() {
             callback.send(Err(TrySendError {
                 error: self.failure.get(),
                 message: None,
             }));
+        }
+    }
+}
+
+// ===== impl BodyGuard =====
+
+impl Drop for BodyGuard {
+    fn drop(&mut self) {
+        if let Some(sender) = self.sender.as_mut() {
+            sender.send_error(self.failure.get());
         }
     }
 }
