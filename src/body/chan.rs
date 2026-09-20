@@ -1,4 +1,5 @@
 use std::{
+    collections::VecDeque,
     fmt,
     sync::{Arc, Mutex},
     task::{Context, Poll},
@@ -10,10 +11,27 @@ use http::HeaderMap;
 
 use crate::lock::LockResultExt;
 
+/// Upper bound on queued body bytes for batched channels.
+const MAX_QUEUED_BYTES: usize = 64 * 1024;
+
 pub(crate) fn channel(wanter: bool) -> (Sender, Receiver) {
+    channel_with(wanter, 1)
+}
+
+/// Accepts up to `capacity` chunks before applying backpressure, so a producer
+/// holding several transport chunks hands them over in one receiver wakeup.
+#[cfg(feature = "http3")]
+pub(crate) fn batched(capacity: usize) -> (Sender, Receiver) {
+    channel_with(false, capacity)
+}
+
+fn channel_with(wanter: bool, capacity: usize) -> (Sender, Receiver) {
     let shared = Arc::new(Shared {
         state: Mutex::new(State {
             item: None,
+            rest: VecDeque::new(),
+            queued: 0,
+            capacity,
             pending_error: None,
             trailers: None,
             sender_open: true,
@@ -54,7 +72,15 @@ struct Shared {
 }
 
 struct State {
+    // Next item to deliver. A single-capacity channel uses only this slot,
+    // which `poll_ready` gates before each send.
     item: Option<Result<Bytes, crate::Error>>,
+    // Further accepted items in order; allocated only once two are queued.
+    rest: VecDeque<Result<Bytes, crate::Error>>,
+    // Bytes of data currently queued.
+    queued: usize,
+    // Maximum queued items before `poll_ready` applies backpressure.
+    capacity: usize,
     // An error must not displace data which was already accepted. The old
     // mpsc channel achieved this by sending the error from a cloned sender.
     pending_error: Option<crate::Error>,
@@ -62,6 +88,44 @@ struct State {
     sender_open: bool,
     receiver_open: bool,
     want: bool,
+}
+
+// ===== impl State =====
+
+impl State {
+    fn len(&self) -> usize {
+        usize::from(self.item.is_some()) + self.rest.len()
+    }
+
+    fn has_room(&self) -> bool {
+        let last = self.rest.back().or(self.item.as_ref());
+        self.len() < self.capacity
+            && self.queued < MAX_QUEUED_BYTES
+            && !matches!(last, Some(Err(_)))
+    }
+
+    fn push(&mut self, entry: Result<Bytes, crate::Error>) {
+        if let Ok(data) = &entry {
+            self.queued += data.len();
+        }
+        if self.item.is_none() && self.rest.is_empty() {
+            self.item = Some(entry);
+        } else {
+            if self.rest.capacity() == 0 {
+                self.rest.reserve(8);
+            }
+            self.rest.push_back(entry);
+        }
+    }
+
+    fn pop(&mut self) -> Option<Result<Bytes, crate::Error>> {
+        let entry = self.item.take()?;
+        self.item = self.rest.pop_front();
+        if let Ok(data) = &entry {
+            self.queued -= data.len();
+        }
+        Some(entry)
+    }
 }
 
 // ===== impl Sender =====
@@ -72,7 +136,7 @@ impl Sender {
         let state = self.shared.state.lock().panic_if_poisoned();
         if !state.receiver_open {
             Poll::Ready(Err(crate::Error::new_closed()))
-        } else if state.want && state.item.is_none() && state.pending_error.is_none() {
+        } else if state.want && state.has_room() && state.pending_error.is_none() {
             Poll::Ready(Ok(()))
         } else {
             Poll::Pending
@@ -81,14 +145,11 @@ impl Sender {
 
     pub(crate) fn send_data(&mut self, chunk: Bytes) -> Result<(), Bytes> {
         let mut state = self.shared.state.lock().panic_if_poisoned();
-        if !state.receiver_open
-            || !state.want
-            || state.item.is_some()
-            || state.pending_error.is_some()
+        if !state.receiver_open || !state.want || !state.has_room() || state.pending_error.is_some()
         {
             return Err(chunk);
         }
-        state.item = Some(Ok(chunk));
+        state.push(Ok(chunk));
         drop(state);
         self.shared.receiver_waker.wake();
         Ok(())
@@ -115,8 +176,8 @@ impl Sender {
         if !state.receiver_open {
             return;
         }
-        if state.item.is_none() {
-            state.item = Some(Err(err));
+        if state.len() == 0 {
+            state.push(Err(err));
         } else if state.pending_error.is_none() {
             state.pending_error = Some(err);
         }
@@ -158,10 +219,12 @@ impl Receiver {
         } else {
             false
         };
-        if let Some(item) = state.item.take() {
+        // Wake the sender only when this take frees capacity it waits for.
+        let was_full = !state.has_room();
+        if let Some(item) = state.pop() {
             let sender_open = state.sender_open;
             drop(state);
-            if sender_open {
+            if sender_open && (was_full || wake_sender) {
                 self.shared.sender_waker.wake();
             }
             return Poll::Ready(Some(item));
