@@ -199,6 +199,9 @@ impl<T, U> Drop for Receiver<T, U> {
     }
 }
 
+/// Holds a request and its response callback until the driver or task takes them.
+/// If dropped before that handoff, returns the unsent request through the callback
+/// with a cancellation error.
 pub(crate) struct Envelope<T, U>(Option<(T, Callback<T, U>)>);
 
 #[cfg(feature = "http3")]
