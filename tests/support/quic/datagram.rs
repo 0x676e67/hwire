@@ -1,18 +1,24 @@
-use std::task::{ready, Context, Poll};
+use std::{
+    sync::Arc,
+    task::{ready, Context, Poll},
+};
 
 use bytes::Bytes;
-use futures_util::{stream, StreamExt};
+use futures_util::{
+    stream::{self, BoxStream},
+    StreamExt,
+};
 use wreq_proto::rt::quic::{
     ConnectionError, DatagramConnection, DatagramError, RecvDatagram, SendDatagram,
 };
 
-use super::{backend, connection_error, Connection, Incoming};
+use super::{backend, Connection};
 
 /// Sends complete QUIC Datagram payloads over the adapted connection.
 pub struct Sender(backend::Connection);
 
 /// Receives complete QUIC Datagram payloads through the adapter's sole reader.
-pub struct Receiver(Incoming<Bytes>);
+pub struct Receiver(BoxStream<'static, Result<Bytes, backend::ConnectionError>>);
 
 // ===== impl Connection =====
 
@@ -26,7 +32,7 @@ impl DatagramConnection for Connection {
             return None;
         }
         self.datagrams_taken = true;
-        let connection = self.open.connection.clone();
+        let connection = self.connection.clone();
         let receiver = Box::pin(stream::unfold(connection.clone(), |connection| async {
             let data = connection.read_datagram().await;
             Some((data, connection))
@@ -68,5 +74,15 @@ impl RecvDatagram for Receiver {
                 .transpose()
                 .map_err(connection_error),
         )
+    }
+}
+
+fn connection_error(error: backend::ConnectionError) -> ConnectionError {
+    match error {
+        backend::ConnectionError::ApplicationClosed(error) => ConnectionError::ApplicationClose {
+            error_code: error.error_code.into_inner(),
+        },
+        backend::ConnectionError::TimedOut => ConnectionError::Timeout,
+        error => ConnectionError::Undefined(Arc::new(error)),
     }
 }
