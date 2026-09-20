@@ -118,6 +118,7 @@ pub(crate) async fn exchange<O, B>(
             }
             return Ok(());
         }
+        headers::strip_connection_headers(request.headers_mut(), true);
         if let Err(error) = validate_request(&request) {
             if let Some(callback) = response.callback.take() {
                 callback.send(Err(TrySendError {

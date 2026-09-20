@@ -150,6 +150,71 @@ async fn request_content_length_matches_method_and_body() {
 }
 
 #[tokio::test]
+async fn connection_headers_are_stripped_before_sending() {
+    bounded(async {
+        let Pair {
+            mut tx,
+            driver,
+            mut server,
+            _endpoints,
+            ..
+        } = pair(Http3Options::default()).await;
+        let drive = tokio::spawn(driver);
+        let peer = tokio::spawn(async move {
+            for te in [None, Some("trailers")] {
+                let (request, mut stream) = server
+                    .accept()
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .resolve_request()
+                    .await
+                    .unwrap();
+                for name in [
+                    "connection",
+                    "keep-alive",
+                    "proxy-connection",
+                    "upgrade",
+                    "transfer-encoding",
+                    "x-hop",
+                ] {
+                    assert!(!request.headers().contains_key(name), "{name}");
+                }
+                assert_eq!(request.headers()["x-end-to-end"], "kept");
+                assert_eq!(request.headers().get("te").map(|v| v.to_str().unwrap()), te);
+                stream.send_response(Response::new(())).await.unwrap();
+                stream.finish().await.unwrap();
+            }
+            let _ = server.accept().await;
+        });
+        for te in ["gzip", "trailers"] {
+            let request = Request::get("https://localhost/")
+                .header("connection", "keep-alive, x-hop")
+                .header("keep-alive", "timeout=5")
+                .header("proxy-connection", "keep-alive")
+                .header("upgrade", "websocket")
+                .header("transfer-encoding", "chunked")
+                .header("x-hop", "removed")
+                .header("x-end-to-end", "kept")
+                .header("te", te)
+                .body(Full::new(Bytes::new()))
+                .unwrap();
+            tx.try_send_request(request)
+                .await
+                .unwrap()
+                .into_body()
+                .collect()
+                .await
+                .unwrap();
+        }
+        drop(tx);
+        drive.await.unwrap().unwrap();
+        peer.await.unwrap();
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn informational_content_length_does_not_set_final_body_length() {
     bounded(async {
         let Pair {

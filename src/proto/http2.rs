@@ -13,10 +13,6 @@ use std::{
 };
 
 use bytes::Buf;
-use http::{
-    header::{HeaderName, CONNECTION, TE, TRANSFER_ENCODING, UPGRADE},
-    HeaderMap,
-};
 pub use http2::frame::{
     Priorities, PrioritiesBuilder, Priority, PseudoId, PseudoOrder, Setting, SettingId,
     SettingsOrder, SettingsOrderBuilder, StreamDependency, StreamId,
@@ -47,57 +43,6 @@ const DEFAULT_MAX_HEADER_LIST_SIZE: u32 = 1024 * 16; // 16kb
 // attempts to open too many streams and gets rejected by the remote peer with
 // the `REFUSED_STREAM` error.
 const DEFAULT_INITIAL_MAX_SEND_STREAMS: usize = 100;
-
-// List of connection headers from RFC 9110 Section 7.6.1
-//
-// TE headers are allowed in HTTP/2 requests as long as the value is "trailers", so they're
-// tested separately.
-static CONNECTION_HEADERS: [HeaderName; 4] = [
-    HeaderName::from_static("keep-alive"),
-    HeaderName::from_static("proxy-connection"),
-    TRANSFER_ENCODING,
-    UPGRADE,
-];
-
-fn strip_connection_headers(headers: &mut HeaderMap, is_request: bool) {
-    for header in &CONNECTION_HEADERS {
-        if headers.remove(header).is_some() {
-            warn!("Connection header illegal in HTTP/2: {}", header.as_str());
-        }
-    }
-
-    if is_request {
-        if headers
-            .get(TE)
-            .is_some_and(|te_header| te_header != "trailers")
-        {
-            warn!("TE headers not set to \"trailers\" are illegal in HTTP/2 requests");
-            headers.remove(TE);
-        }
-    } else if headers.remove(TE).is_some() {
-        warn!("TE headers illegal in HTTP/2 responses");
-    }
-
-    if let Some(header) = headers.remove(CONNECTION) {
-        warn!(
-            "Connection header illegal in HTTP/2: {}",
-            CONNECTION.as_str()
-        );
-
-        if let Ok(header_contents) = header.to_str() {
-            // A `Connection` header may have a comma-separated list of names of other headers that
-            // are meant for only this specific connection.
-            //
-            // Iterate these names and remove them as headers. Connection-specific headers are
-            // forbidden in HTTP2, as that information has been moved into frame types of the h2
-            // protocol.
-            for name in header_contents.split(',') {
-                let name = name.trim();
-                headers.remove(name);
-            }
-        }
-    }
-}
 
 struct Peeked<D> {
     data: D,
