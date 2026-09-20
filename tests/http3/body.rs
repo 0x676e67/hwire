@@ -1,6 +1,126 @@
 use super::*;
 
 #[tokio::test]
+async fn upload_failure_cancels_unread_response_and_releases_request() {
+    type Body = http_body_util::combinators::BoxBody<Bytes, std::io::Error>;
+
+    for poll_body in [false, true] {
+        bounded(async {
+            let Pair {
+                mut tx,
+                driver,
+                mut server,
+                _endpoints,
+                ..
+            } = pair_with::<Body, _>(
+                Http3Options::builder().max_concurrent_requests(1).build(),
+                Exec,
+            )
+            .await;
+            let drive = tokio::spawn(driver);
+            let (canceled, cancellation_seen) = oneshot::channel();
+            let peer = tokio::spawn(async move {
+                let resolver = server.accept().await.unwrap().unwrap();
+                let first = tokio::spawn(async move {
+                    let (_, stream) = resolver.resolve_request().await.unwrap();
+                    let (mut send, mut recv) = stream.split();
+                    send.send_response(Response::new(())).await.unwrap();
+                    assert!(matches!(recv.recv_data().await,
+                        Err(h3::error::StreamError::RemoteTerminate { code, .. })
+                            if code == h3::error::Code::H3_REQUEST_CANCELLED));
+                    loop {
+                        if let Err(error) = send.send_data(Bytes::from(vec![1; 64 * 1024])).await {
+                            assert!(matches!(error,
+                                h3::error::StreamError::RemoteTerminate { code, .. }
+                                    if code == h3::error::Code::H3_REQUEST_CANCELLED));
+                            break;
+                        }
+                    }
+                    canceled.send(()).unwrap();
+                });
+                let (_, mut stream) = server
+                    .accept()
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .resolve_request()
+                    .await
+                    .unwrap();
+                assert!(stream.recv_data().await.unwrap().is_none());
+                stream.send_response(Response::new(())).await.unwrap();
+                stream.finish().await.unwrap();
+                first.await.unwrap();
+                let _ = server.accept().await;
+            });
+            let (fail, failed) = oneshot::channel();
+            let upload = http_body_util::StreamBody::new(futures_util::stream::once(async move {
+                failed.await.unwrap();
+                Err::<http_body::Frame<Bytes>, _>(std::io::Error::other(
+                    "upload failed after response",
+                ))
+            }))
+            .boxed();
+            let response = tx
+                .try_send_request(
+                    Request::post("https://localhost/failing")
+                        .body(upload)
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let mut body = response.into_body();
+            let mut frame = tokio_test::task::spawn(body.frame());
+            if poll_body {
+                assert!(frame.poll().is_pending());
+            }
+            fail.send(()).unwrap();
+            // Both RESET_STREAM and STOP_SENDING must reach the peer while the
+            // application retains the response without advancing its Body.
+            cancellation_seen.await.unwrap();
+            let response = tx
+                .try_send_request(
+                    Request::get("https://localhost/healthy")
+                        .body(
+                            Full::new(Bytes::new())
+                                .map_err(|never| match never {})
+                                .boxed(),
+                        )
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert!(response
+                .into_body()
+                .collect()
+                .await
+                .unwrap()
+                .to_bytes()
+                .is_empty());
+            if poll_body {
+                assert!(frame.is_woken(), "upload failure must wake a pending Body");
+            }
+            let error = match frame.poll() {
+                std::task::Poll::Ready(Some(Err(error))) => error,
+                result => panic!("expected the upload error, got {result:?}"),
+            };
+            assert!(error.is_user(), "{error:?}");
+            let cause = std::iter::successors(Some(&error as &dyn std::error::Error), |error| {
+                error.source()
+            })
+            .find_map(|error| error.downcast_ref::<std::io::Error>())
+            .expect("original upload error is retained");
+            assert_eq!(cause.to_string(), "upload failed after response");
+            drop(frame);
+            assert!(body.frame().await.is_none());
+            drop(tx);
+            drive.await.unwrap().unwrap();
+            peer.await.unwrap();
+        })
+        .await;
+    }
+}
+
+#[tokio::test]
 async fn dropping_response_body_preserves_pending_upload() {
     bounded(async {
         let (upload, ready) = oneshot::channel();
