@@ -1,8 +1,9 @@
+#[cfg(feature = "http3-datagram")]
+use std::sync::Arc;
 use std::{
     future::{poll_fn, Future},
     io,
     pin::Pin,
-    sync::Arc,
     task::{ready, Context, Poll},
 };
 
@@ -41,8 +42,8 @@ pub(super) async fn run<S, R, B>(
     send: SendGuard<S>,
     recv: RecvGuard<R>,
     mut headers: Response<()>,
-    response: &mut ResponseGuard<B>,
-    failure: Arc<Failure>,
+    response: &mut ResponseGuard<'_, B>,
+    failure: &Failure,
     #[cfg(feature = "http3-datagram")] datagrams: Option<Arc<super::datagram::RequestState>>,
 ) -> Result<()>
 where
@@ -89,7 +90,7 @@ where
     }
     let body = BodyGuard {
         sender: Some(sender),
-        failure: failure.clone(),
+        failure,
     };
     let write = upload(send, rx).map_err(|error| {
         failure.set(error);
@@ -143,7 +144,10 @@ async fn upload<S: quic::SendStream<Bytes>>(
     }
 }
 
-async fn download<R: quic::RecvStream>(mut recv: RecvGuard<R>, mut body: BodyGuard) -> Result<()> {
+async fn download<R: quic::RecvStream>(
+    mut recv: RecvGuard<R>,
+    mut body: BodyGuard<'_>,
+) -> Result<()> {
     let Some(sender) = body.sender.as_mut() else {
         return Err(Error::new_canceled());
     };

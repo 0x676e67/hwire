@@ -33,14 +33,14 @@ pub(super) struct Failure {
     connection: Arc<Shared>,
 }
 
-pub(super) struct ResponseGuard<B> {
+pub(super) struct ResponseGuard<'a, B> {
     pub(super) callback: Option<Callback<B>>,
-    pub(super) failure: Arc<Failure>,
+    pub(super) failure: &'a Failure,
 }
 
-pub(super) struct BodyGuard {
+pub(super) struct BodyGuard<'a> {
     pub(super) sender: Option<Sender>,
-    pub(super) failure: Arc<Failure>,
+    pub(super) failure: &'a Failure,
 }
 
 pub(super) struct SendGuard<S: quic::SendStream<Bytes>> {
@@ -72,14 +72,14 @@ pub(crate) async fn exchange<O, B>(
 {
     let (mut request, mut callback) = envelope.into_parts();
     let shared = active.0.clone();
-    let failure = Arc::new(Failure {
+    let failure = Failure {
         error: OnceLock::new(),
         connection: shared.clone(),
-    });
+    };
     let cancel = callback.take_cancellation();
     let mut response = ResponseGuard {
         callback: Some(callback),
-        failure: failure.clone(),
+        failure: &failure,
     };
     #[cfg(feature = "http3-datagram")]
     let datagram_cancellation = shared
@@ -200,7 +200,7 @@ pub(crate) async fn exchange<O, B>(
                         recv,
                         headers,
                         &mut response,
-                        failure.clone(),
+                        &failure,
                         #[cfg(feature = "http3-datagram")]
                         if datagram_request {
                             registration.as_ref().map(|r| r.0.clone())
@@ -214,23 +214,15 @@ pub(crate) async fn exchange<O, B>(
             } else {
                 None
             };
-            let send_failure = failure.clone();
-            let recv_failure = failure.clone();
-            let upload = upload(send, body, length).map_err(move |error| {
-                send_failure.set(error);
-                send_failure.get()
+            let upload = upload(send, body, length).map_err(|error| {
+                failure.set(error);
+                failure.get()
             });
-            let download = download(
-                recv,
-                &mut response,
-                head,
-                initial_response,
-                recv_failure.clone(),
-            )
-            .map_err(|error| {
-                recv_failure.set(error);
-                recv_failure.get()
-            });
+            let download =
+                download(recv, &mut response, head, initial_response, &failure).map_err(|error| {
+                    failure.set(error);
+                    failure.get()
+                });
             try_join(upload, download).await.map(|_| ())
         };
         transfer.await
@@ -391,10 +383,10 @@ async fn response_headers<S: quic::RecvStream>(recv: &mut RecvGuard<S>) -> Resul
 
 async fn download<S: quic::RecvStream, B>(
     mut recv: RecvGuard<S>,
-    response: &mut ResponseGuard<B>,
+    response: &mut ResponseGuard<'_, B>,
     head: bool,
     initial_response: Option<Response<()>>,
-    failure: Arc<Failure>,
+    failure: &Failure,
 ) -> Result<()> {
     let mut budget = 0;
     let mut headers = match initial_response {
@@ -613,7 +605,7 @@ impl Failure {
 
 // ===== impl ResponseGuard =====
 
-impl<B> Drop for ResponseGuard<B> {
+impl<B> Drop for ResponseGuard<'_, B> {
     fn drop(&mut self) {
         if let Some(callback) = self.callback.take() {
             callback.send(Err(TrySendError {
@@ -626,7 +618,7 @@ impl<B> Drop for ResponseGuard<B> {
 
 // ===== impl BodyGuard =====
 
-impl Drop for BodyGuard {
+impl Drop for BodyGuard<'_> {
     fn drop(&mut self) {
         if let Some(sender) = self.sender.as_mut() {
             sender.send_error(self.failure.get());
