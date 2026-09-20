@@ -377,7 +377,7 @@ where
                 }
             }
         }
-        if ConnectionState::is_closing(this.driver.as_ref()) || this.rx.is_closed() {
+        if ConnectionState::is_closing(this.driver.as_ref()) {
             this.shared.drain();
         }
         if this.shared.draining.load(Ordering::Acquire) {
@@ -415,6 +415,8 @@ where
                     )));
                 }
                 None => {
+                    // All senders are gone and the queue is empty. Buffered
+                    // requests must be dispatched before starting the drain.
                     this.shared.drain();
                     return Poll::Pending;
                 }

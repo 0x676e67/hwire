@@ -1,6 +1,90 @@
 use super::*;
 
 #[tokio::test]
+async fn last_sender_drop_dispatches_queued_requests() {
+    for limit in [1, 128] {
+        bounded(async {
+            let Pair {
+                mut tx,
+                driver,
+                mut server,
+                _endpoints,
+                ..
+            } = pair(
+                Http3Options::builder()
+                    .max_concurrent_requests(limit)
+                    .build(),
+            )
+            .await;
+            // Queue more than one driver's poll budget before it can dispatch.
+            let responses: Vec<_> = (0..35)
+                .map(|index| {
+                    tx.try_send_request(
+                        Request::get(format!("https://localhost/{index}"))
+                            .body(Full::new(Bytes::new()))
+                            .unwrap(),
+                    )
+                })
+                .collect();
+            drop(tx);
+            let drive = tokio::spawn(driver);
+            let peer = tokio::spawn(async move {
+                for _ in 0..35 {
+                    let (request, mut stream) = server
+                        .accept()
+                        .await
+                        .unwrap()
+                        .unwrap()
+                        .resolve_request()
+                        .await
+                        .unwrap();
+                    while stream.recv_data().await.unwrap().is_some() {}
+                    stream.send_response(Response::new(())).await.unwrap();
+                    stream
+                        .send_data(Bytes::copy_from_slice(request.uri().path().as_bytes()))
+                        .await
+                        .unwrap();
+                    stream.finish().await.unwrap();
+                }
+                let _ = server.accept().await;
+            });
+            for (index, response) in responses.into_iter().enumerate() {
+                let body = response
+                    .await
+                    .unwrap()
+                    .into_body()
+                    .collect()
+                    .await
+                    .unwrap()
+                    .to_bytes();
+                assert_eq!(body, format!("/{index}"));
+            }
+            drive.await.unwrap().unwrap();
+            peer.await.unwrap();
+        })
+        .await;
+    }
+}
+
+#[tokio::test]
+async fn last_sender_drop_closes_idle_connection() {
+    bounded(async {
+        let Pair {
+            tx,
+            driver,
+            mut server,
+            _endpoints,
+            ..
+        } = pair(Http3Options::default()).await;
+        drop(tx);
+        let drive = tokio::spawn(driver);
+        let _ = server.accept().await;
+        drive.await.unwrap().unwrap();
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn upload_failure_cancels_unread_response_and_releases_request() {
     type Body = http_body_util::combinators::BoxBody<Bytes, std::io::Error>;
 

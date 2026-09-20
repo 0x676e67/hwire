@@ -159,11 +159,6 @@ pub(crate) struct Receiver<T, U> {
 }
 
 impl<T, U> Receiver<T, U> {
-    #[cfg(feature = "http3")]
-    pub(crate) fn is_closed(&self) -> bool {
-        self.inner.is_closed()
-    }
-
     pub(crate) fn poll_recv(&mut self, cx: &mut Context<'_>) -> Poll<Option<(T, Callback<T, U>)>> {
         match self.inner.poll_recv(cx) {
             Poll::Ready(item) => {
