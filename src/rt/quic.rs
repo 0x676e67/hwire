@@ -92,8 +92,13 @@ pub trait SendStream<B: Buf> {
     ) -> Poll<Result<usize, StreamError>>;
 
     /// Observes peer STOP_SENDING independently of pending application writes.
-    /// The owned future returns the stop code, or None after an acknowledged FIN.
+    /// The owned future must resolve to `Ok(Some(code))` on STOP_SENDING,
+    /// `Ok(None)` once all sent data and FIN are acknowledged, or `Err` on failure.
     /// It must remain usable while the send half is owned by HTTP/3.
+    ///
+    /// The HTTP/3 driver relies on this completion to release each request's
+    /// active slot and finish graceful shutdown. Remaining pending after FIN
+    /// acknowledgment prevents both from completing.
     fn stopped(&self) -> impl Future<Output = Result<Option<u64>, StreamError>> + Send + 'static;
 
     /// Submits FIN after previously accepted bytes; this does not await an ACK.
