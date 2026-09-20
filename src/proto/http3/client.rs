@@ -119,15 +119,18 @@ pub(crate) async fn exchange<O, B>(
             return Ok(());
         }
         headers::strip_connection_headers(request.headers_mut(), true);
-        if let Err(error) = validate_request(&request) {
-            if let Some(callback) = response.callback.take() {
-                callback.send(Err(TrySendError {
-                    error: Error::new_user_invalid_request(error),
-                    message: Some(request),
-                }));
+        let length = match validate_request(&request) {
+            Ok(length) => length,
+            Err(error) => {
+                if let Some(callback) = response.callback.take() {
+                    callback.send(Err(TrySendError {
+                        error: Error::new_user_invalid_request(error),
+                        message: Some(request),
+                    }));
+                }
+                return Ok(());
             }
-            return Ok(());
-        }
+        };
         if request.extensions().get::<http3::ext::Protocol>().is_some() {
             shared.settings_ready.cancelled().await;
             if !shared
@@ -146,7 +149,6 @@ pub(crate) async fn exchange<O, B>(
                 return Ok(());
             }
         }
-        let length = content_length(request.headers())?;
         let length = if length.is_none() && !connect {
             let size = request.body().size_hint().exact();
             if let Some(size) = size {
@@ -490,7 +492,8 @@ async fn download<S: quic::RecvStream, B>(
     Ok(())
 }
 
-fn validate_request<B>(request: &Request<B>) -> Result<()> {
+/// Validates the request and returns its declared Content-Length.
+fn validate_request<B>(request: &Request<B>) -> Result<Option<u64>> {
     if request.extensions().get::<http3::ext::Protocol>().is_some()
         && request.method() != Method::CONNECT
     {
@@ -516,17 +519,6 @@ fn validate_request<B>(request: &Request<B>) -> Result<()> {
     {
         return Err(Error::new_h3("Host conflicts with HTTP/3 authority"));
     }
-    for name in [
-        "connection",
-        "proxy-connection",
-        "keep-alive",
-        "transfer-encoding",
-        "upgrade",
-    ] {
-        if request.headers().contains_key(name) {
-            return Err(Error::new_h3("connection-specific HTTP/3 header"));
-        }
-    }
     if request
         .headers()
         .get_all(header::TE)
@@ -535,8 +527,7 @@ fn validate_request<B>(request: &Request<B>) -> Result<()> {
     {
         return Err(Error::new_h3("HTTP/3 TE must be trailers"));
     }
-    content_length(request.headers())?;
-    Ok(())
+    content_length(request.headers())
 }
 
 fn content_length(headers: &HeaderMap) -> Result<Option<u64>> {
