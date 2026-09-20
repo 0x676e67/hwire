@@ -75,10 +75,7 @@ impl Incoming {
 
     #[cfg(feature = "http3")]
     pub(crate) fn h3(content_length: DecodedLength) -> (Sender, Self) {
-        // QUIC delivers a body as many small chunks. Queue several per handoff so
-        // the exchange task drains the transport in one poll and the body consumer
-        // reads them in one wakeup, instead of one task round trip per chunk.
-        let (tx, rx) = chan::batched(32);
+        let (tx, rx) = chan::channel(false);
         (
             tx,
             Self {
