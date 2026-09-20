@@ -29,6 +29,7 @@ mod tls;
 use std::{future::Future, time::Duration};
 
 use bytes::{Buf, Bytes, BytesMut};
+use futures_util::future::BoxFuture;
 use http::{HeaderMap, Request, Response, Version};
 use http_body_util::{BodyExt, Full};
 use tokio::{sync::oneshot, time::timeout};
@@ -68,7 +69,7 @@ where
     B: http_body::Body + Send + 'static,
     B::Data: Send,
     B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
-    E: Executor<std::pin::Pin<Box<dyn Future<Output = ()> + Send>>>,
+    E: Executor<BoxFuture<'static, ()>>,
 {
     pair_config(options, exec, false, false, false, None).await
 }
@@ -85,7 +86,7 @@ where
     B: http_body::Body + Send + 'static,
     B::Data: Send,
     B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
-    E: Executor<std::pin::Pin<Box<dyn Future<Output = ()> + Send>>>,
+    E: Executor<BoxFuture<'static, ()>>,
 {
     let (_, mut server_config, client_config) = tls::config();
     if let Some(bidi) = bidi {

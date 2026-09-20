@@ -10,18 +10,21 @@ use std::{
 
 use ::quic as backend;
 use bytes::{Buf, Bytes};
-use futures_util::{stream, Stream, StreamExt};
+use futures_util::{
+    future::BoxFuture,
+    stream::{self, BoxStream},
+    StreamExt,
+};
 use wreq_proto::rt::quic::{self as rt, ConnectionError, StreamError, StreamId};
 #[cfg(feature = "http3-datagram")]
 #[path = "quic/datagram.rs"]
 mod datagram;
 
-type Opening<T> = Pin<Box<dyn Future<Output = Result<T, backend::ConnectionError>> + Send>>;
+type Opening<T> = BoxFuture<'static, Result<T, backend::ConnectionError>>;
 
-type Incoming<T> = Pin<Box<dyn Stream<Item = Result<T, backend::ConnectionError>> + Send>>;
+type Incoming<T> = BoxStream<'static, Result<T, backend::ConnectionError>>;
 
-type Stopped =
-    Pin<Box<dyn Future<Output = Result<Option<backend::VarInt>, backend::StoppedError>> + Send>>;
+type Stopped = BoxFuture<'static, Result<Option<backend::VarInt>, backend::StoppedError>>;
 
 /// Owns the incoming streams of one established QUIC connection.
 /// Use one adapter per HTTP/3 connection and keep other stream readers inactive.

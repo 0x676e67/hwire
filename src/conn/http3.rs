@@ -12,6 +12,7 @@ use std::{
 };
 
 use bytes::Bytes;
+use futures_util::future::BoxFuture;
 use http::{Request, Response};
 use http3::{error::Code, ConnectionState};
 use http_body::Body;
@@ -160,7 +161,7 @@ impl<E> Builder<E> {
         B: Body + Send + 'static,
         B::Data: Send,
         B::Error: Into<BoxError>,
-        E: Executor<Pin<Box<dyn Future<Output = ()> + Send>>>,
+        E: Executor<BoxFuture<'static, ()>>,
     {
         self.handshake_inner(
             quic,
@@ -191,7 +192,7 @@ impl<E> Builder<E> {
         B: Body + Send + 'static,
         B::Data: Send,
         B::Error: Into<BoxError>,
-        E: Executor<Pin<Box<dyn Future<Output = ()> + Send>>>,
+        E: Executor<BoxFuture<'static, ()>>,
     {
         let Some((sender, receiver)) = quic.take_datagrams() else {
             return Err(Error::new_h3("QUIC Datagram reader already taken"));
@@ -218,7 +219,7 @@ impl<E> Builder<E> {
         B: Body + Send + 'static,
         B::Data: Send,
         B::Error: Into<BoxError>,
-        E: Executor<Pin<Box<dyn Future<Output = ()> + Send>>>,
+        E: Executor<BoxFuture<'static, ()>>,
     {
         let opts = self.options;
         if opts.max_concurrent_requests == 0 {
@@ -318,7 +319,7 @@ where
     B: Body + Send + 'static,
     B::Data: Send,
     B::Error: Into<BoxError>,
-    E: Executor<Pin<Box<dyn Future<Output = ()> + Send>>> + Unpin,
+    E: Executor<BoxFuture<'static, ()>> + Unpin,
 {
     type Output = Result<()>;
 

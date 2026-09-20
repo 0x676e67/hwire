@@ -19,7 +19,7 @@ use std::{
 
 use bytes::Bytes;
 use futures_channel::oneshot;
-use futures_util::future::{self, FutureExt, TryFuture, TryFutureExt};
+use futures_util::future::{self, FutureExt, LocalBoxFuture, TryFuture, TryFutureExt};
 use http::uri::PathAndQuery;
 use http_body_util::{BodyExt, StreamBody};
 use hyper::{
@@ -4269,7 +4269,7 @@ mod conn {
 }
 
 trait FutureHyperExt: TryFuture {
-    fn expect(self, msg: &'static str) -> Pin<Box<dyn Future<Output = Self::Ok>>>;
+    fn expect(self, msg: &'static str) -> LocalBoxFuture<'static, Self::Ok>;
 }
 
 impl<F> FutureHyperExt for F
@@ -4277,7 +4277,7 @@ where
     F: TryFuture + 'static,
     F::Error: std::fmt::Debug,
 {
-    fn expect(self, msg: &'static str) -> Pin<Box<dyn Future<Output = Self::Ok>>> {
+    fn expect(self, msg: &'static str) -> LocalBoxFuture<'static, Self::Ok> {
         Box::pin(
             self.inspect_err(move |e| panic!("expect: {}; error={:?}", msg, e))
                 .map(Result::unwrap),

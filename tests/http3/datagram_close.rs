@@ -5,19 +5,20 @@ use std::{
     task::{Context, Poll},
 };
 
-use futures_util::{future::poll_fn, task::AtomicWaker};
+use futures_util::{
+    future::{poll_fn, BoxFuture},
+    task::AtomicWaker,
+};
 use wreq_proto::rt::quic::{self as rt, DatagramConnection, OpenStreams};
 
 use super::*;
-
-type Job = Pin<Box<dyn Future<Output = ()> + Send>>;
 
 #[derive(Clone, Default)]
 struct Jobs(Arc<Queue>);
 
 #[derive(Default)]
 struct Queue {
-    jobs: Mutex<Vec<Job>>,
+    jobs: Mutex<Vec<BoxFuture<'static, ()>>>,
     waker: AtomicWaker,
 }
 
@@ -40,8 +41,8 @@ impl Jobs {
     }
 }
 
-impl Executor<Job> for Jobs {
-    fn execute(&self, job: Job) {
+impl Executor<BoxFuture<'static, ()>> for Jobs {
+    fn execute(&self, job: BoxFuture<'static, ()>) {
         self.0.jobs.lock().unwrap().push(job);
         self.0.waker.wake();
     }

@@ -10,6 +10,7 @@ use std::{
 };
 
 use bytes::Bytes;
+use futures_util::future::BoxFuture;
 pub use futures_util::{
     future, FutureExt as _, StreamExt as _, TryFutureExt as _, TryStreamExt as _,
 };
@@ -471,15 +472,14 @@ async fn async_test(cfg: __TestConfig) {
         }
     });
 
-    let client_futures: Pin<Box<dyn Future<Output = ()> + Send>> = if cfg.parallel {
+    let client_futures: BoxFuture<'static, ()> = if cfg.parallel {
         let mut client_futures = vec![];
         for (creq, cres) in cfg.client_msgs {
             client_futures.push(make_request(creq, cres));
         }
         Box::pin(future::join_all(client_futures).map(|_| ()))
     } else {
-        let mut client_futures: Pin<Box<dyn Future<Output = ()> + Send>> =
-            Box::pin(future::ready(()));
+        let mut client_futures: BoxFuture<'static, ()> = Box::pin(future::ready(()));
         for (creq, cres) in cfg.client_msgs {
             let mk_request = make_request.clone();
             client_futures = Box::pin(client_futures.then(move |_| mk_request(creq, cres)));

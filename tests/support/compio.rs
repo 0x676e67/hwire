@@ -12,6 +12,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use futures_util::future::LocalBoxFuture;
 use send_wrapper::SendWrapper;
 use wreq_proto::rt::{Executor, Sleep, Timer};
 
@@ -61,7 +62,7 @@ impl CompioTimer {
 /// compio futures are `!Send` (thread-per-core), so we wrap in `SendWrapper`
 /// to satisfy wreq's `Send` bounds.
 struct CompioSleep {
-    inner: SendWrapper<Pin<Box<dyn Future<Output = ()>>>>,
+    inner: SendWrapper<LocalBoxFuture<'static, ()>>,
 }
 
 impl CompioSleep {

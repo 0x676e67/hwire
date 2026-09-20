@@ -39,7 +39,7 @@ http-body = "1.0.1"
 want = "0.3.1"
 pin-project-lite = "0.2.17"
 futures-channel = "0.3.32"
-futures-util = { version = "0.3.32", default-features = false }
+futures-util = { version = "0.3.32", default-features = false, features = ["alloc"] }
 smallvec = { version = "1.15.1", features = ["const_generics", "const_new"] }
 tokio = { version = "1.52.3", default-features = false }
 tokio-util = { version = "0.7.18", default-features = false }
@@ -131,5 +131,5 @@ incremental = false
 
 # PR #107 adds `SendStream::poll_stopped` on top of the 0.1.1 fixes.
 [patch.crates-io]
-http3 = { git = "https://github.com/0x676e67/http3", rev = "95b997be133faaf5e87008af861c9ddfe6098ff3" }
-http3-quic = { git = "https://github.com/0x676e67/http3", rev = "95b997be133faaf5e87008af861c9ddfe6098ff3" }
+http3 = { git = "https://github.com/0x676e67/http3", rev = "7550063d63d1e9862d3b4fee9ec938f77fa29801" }
+http3-quic = { git = "https://github.com/0x676e67/http3", rev = "7550063d63d1e9862d3b4fee9ec938f77fa29801" }
