@@ -159,8 +159,11 @@ impl Receiver {
             false
         };
         if let Some(item) = state.item.take() {
+            let sender_open = state.sender_open;
             drop(state);
-            self.shared.sender_waker.wake();
+            if sender_open {
+                self.shared.sender_waker.wake();
+            }
             return Poll::Ready(Some(item));
         }
         if let Some(err) = state.pending_error.take() {
