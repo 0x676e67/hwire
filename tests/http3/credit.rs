@@ -62,7 +62,6 @@ async fn canceled_openers_do_not_strand_other_credit_waiters() {
         for _ in 0..REQUESTS / 2 {
             completions.recv().await.unwrap();
         }
-        assert_eq!(pause.observers(), 0);
         server_quic.set_max_concurrent_bi_streams(1_u32.into());
         let peer = tokio::spawn(async move {
             let mut seen = [false; REQUESTS];
@@ -118,7 +117,6 @@ async fn canceled_openers_do_not_strand_other_credit_waiters() {
         for _ in 0..REQUESTS / 2 {
             completions.recv().await.unwrap();
         }
-        assert_eq!(pause.observers(), 0);
         assert!(client_stats.stats().frame_rx.max_streams_bidi > 1);
         drop(tx);
         client_driver.await.unwrap().unwrap();

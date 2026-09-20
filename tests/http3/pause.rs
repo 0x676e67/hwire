@@ -1,12 +1,11 @@
 //! Pauses the first request after one byte, leaving control streams untouched.
 
 use std::{
-    future::Future,
     sync::{
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, Ordering},
         Arc,
     },
-    task::{Context, Poll},
+    task::{ready, Context, Poll},
 };
 
 use bytes::{Buf, Bytes};
@@ -19,7 +18,6 @@ pub struct Pause(Arc<State>);
 
 #[derive(Default)]
 struct State {
-    observers: AtomicUsize,
     written: AtomicBool,
     resumed: AtomicBool,
     blocked: Notify,
@@ -28,7 +26,8 @@ struct State {
     writer: AtomicWaker,
     hold_finish_ack: AtomicBool,
     waiting_for_ack: Notify,
-    release_ack: Notify,
+    ack_released: AtomicBool,
+    ack_waker: AtomicWaker,
 }
 
 #[derive(Clone)]
@@ -36,16 +35,7 @@ pub struct Transport<T> {
     inner: T,
     pause: Pause,
     credit_reported: bool,
-}
-
-struct Observer(Pause);
-
-// ===== impl Observer =====
-
-impl Drop for Observer {
-    fn drop(&mut self) {
-        self.0 .0.observers.fetch_sub(1, Ordering::AcqRel);
-    }
+    holding_ack: bool,
 }
 
 // ===== impl Pause =====
@@ -56,6 +46,7 @@ impl Pause {
             inner,
             pause: self.clone(),
             credit_reported: false,
+            holding_ack: false,
         }
     }
 
@@ -69,10 +60,6 @@ impl Pause {
 
     pub async fn received_fin(&self) {
         self.0.received_fin.notified().await;
-    }
-
-    pub fn observers(&self) -> usize {
-        self.0.observers.load(Ordering::Acquire)
     }
 
     pub fn resume(&self) {
@@ -90,7 +77,8 @@ impl Pause {
     }
 
     pub fn release_finish_ack(&self) {
-        self.0.release_ack.notify_one();
+        self.0.ack_released.store(true, Ordering::Release);
+        self.0.ack_waker.wake();
     }
 }
 
@@ -176,23 +164,26 @@ impl<T: SendStream<Bytes>> SendStream<Bytes> for Transport<T> {
         result
     }
 
-    fn stopped(
-        &self,
-    ) -> impl Future<Output = Result<Option<u64>, quic::StreamError>> + Send + 'static {
-        let stopped = self.inner.stopped();
-        self.pause.0.observers.fetch_add(1, Ordering::AcqRel);
-        let observer = Observer(self.pause.clone());
-        async move {
-            let observer = observer;
-            let result = stopped.await;
-            if matches!(result, Ok(None)) && observer.0 .0.hold_finish_ack.load(Ordering::Acquire) {
-                // Model an acknowledged FIN whose completion is not yet
-                // visible to the client, without delaying peer stream reads.
-                observer.0 .0.waiting_for_ack.notify_one();
-                observer.0 .0.release_ack.notified().await;
+    fn poll_stopped(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<Option<u64>, quic::StreamError>> {
+        if !self.holding_ack {
+            let result = ready!(self.inner.poll_stopped(cx));
+            if !matches!(result, Ok(None)) || !self.pause.0.hold_finish_ack.load(Ordering::Acquire)
+            {
+                return Poll::Ready(result);
             }
-            result
+            // Model an acknowledged FIN whose completion is not yet visible to
+            // the client, without delaying peer stream reads.
+            self.holding_ack = true;
+            self.pause.0.waiting_for_ack.notify_one();
         }
+        self.pause.0.ack_waker.register(cx.waker());
+        if self.pause.0.ack_released.load(Ordering::Acquire) {
+            return Poll::Ready(Ok(None));
+        }
+        Poll::Pending
     }
 
     fn poll_finish(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), quic::StreamError>> {

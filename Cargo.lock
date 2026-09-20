@@ -725,7 +725,7 @@ dependencies = [
 [[package]]
 name = "http3"
 version = "0.1.1"
-source = "git+https://github.com/0x676e67/http3?rev=e7103dc594a88b8473a1f6af477c5e17266767cb#e7103dc594a88b8473a1f6af477c5e17266767cb"
+source = "git+https://github.com/0x676e67/http3?rev=95b997be133faaf5e87008af861c9ddfe6098ff3#95b997be133faaf5e87008af861c9ddfe6098ff3"
 dependencies = [
  "bytes",
  "fastrand",
@@ -750,8 +750,7 @@ dependencies = [
 [[package]]
 name = "http3-quic"
 version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "22f08762737828b5d6a577cf2bab36be60e5c744bf245da5019538a6f9f69f16"
+source = "git+https://github.com/0x676e67/http3?rev=95b997be133faaf5e87008af861c9ddfe6098ff3#95b997be133faaf5e87008af861c9ddfe6098ff3"
 dependencies = [
  "bytes",
  "futures-util",

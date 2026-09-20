@@ -172,7 +172,6 @@ async fn canceling_partially_written_headers_resets_stream_and_releases_slot() {
                 .unwrap(),
         );
         pause.blocked().await;
-        assert_eq!(pause.observers(), 1);
         // Accept while the stream is still open so the reset cannot race the
         // server's initial stream discovery.
         let resolver = server.accept().await.unwrap().unwrap();
@@ -185,11 +184,6 @@ async fn canceling_partially_written_headers_resets_stream_and_releases_slot() {
                     if code == h3::error::Code::H3_REQUEST_CANCELLED
             ),
             "{error}"
-        );
-        assert_eq!(
-            pause.observers(),
-            0,
-            "canceled HEADERS retained stop observer"
         );
         pause.resume();
         let response = tx.try_send_request(
@@ -1326,7 +1320,6 @@ async fn dropped_unpolled_response_after_fin_cancels_pending_upload() {
         drop(tx);
         client_driver.await.unwrap().unwrap();
         server_task.await.unwrap();
-        assert_eq!(pause.observers(), 0);
     })
     .await;
 }

@@ -49,7 +49,6 @@ pub(super) struct SendGuard<S: quic::SendStream<Bytes>> {
     #[cfg(feature = "http3-datagram")]
     pub(super) datagrams: Option<Arc<super::datagram::RequestState>>,
     pub(super) stream: RequestStream<S, Bytes>,
-    pub(super) stopped: super::transport::Stopped,
     pub(super) finished: bool,
 }
 
@@ -63,7 +62,6 @@ pub(super) struct RecvGuard<S: quic::RecvStream> {
 
 pub(crate) async fn exchange<O, B>(
     mut sender: SendRequest<O, Bytes>,
-    stops: super::transport::Stops,
     envelope: Envelope<Request<B>, Response<Incoming>>,
     active: Active,
 ) where
@@ -174,9 +172,6 @@ pub(crate) async fn exchange<O, B>(
                 "QUIC backend returned a non-client request stream ID",
             ));
         }
-        let stopped = stops
-            .take(stream.id())
-            .ok_or_else(|| Error::new_h3("QUIC stop observer missing"))?;
         let transfer = async {
             #[cfg(feature = "http3-datagram")]
             let registration =
@@ -190,7 +185,6 @@ pub(crate) async fn exchange<O, B>(
                 #[cfg(feature = "http3-datagram")]
                 datagrams: registration.as_ref().map(|r| r.0.clone()),
                 stream: send,
-                stopped,
                 finished: false,
             };
             let mut recv = RecvGuard {
@@ -303,7 +297,7 @@ where
         // reach the QUIC writer, so checking only on Pending would miss STOP.
         // A complete early response remains valid: RFC 9114, Section 4.1.
         // https://www.rfc-editor.org/rfc/rfc9114.html#section-4.1
-        if let Poll::Ready(result) = send.stopped.as_mut().poll(cx) {
+        if let Poll::Ready(result) = send.stream.poll_stopped(cx) {
             stopped = true;
             return Poll::Ready(result.err().map(|error| Err(Error::new_h3(error))));
         }
@@ -364,8 +358,7 @@ where
     }
     // FIN is only queued by finish(). Keep the exchange active until transport
     // delivery or peer cancellation, so connection drain cannot discard it.
-    send.stopped
-        .as_mut()
+    poll_fn(|cx| send.stream.poll_stopped(cx))
         .await
         .map(|_| ())
         .map_err(Error::new_h3)

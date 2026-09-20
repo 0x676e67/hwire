@@ -107,7 +107,7 @@ async fn upload<S: quic::SendStream<Bytes>>(
     let mut budget = 0;
     let mut stopped = false;
     while let Some(write) = poll_fn(|cx| {
-        if let Poll::Ready(result) = send.stopped.as_mut().poll(cx) {
+        if let Poll::Ready(result) = send.stream.poll_stopped(cx) {
             stopped = true;
             return Poll::Ready(result.map(|_| None).map_err(Error::new_h3));
         }
@@ -130,9 +130,7 @@ async fn upload<S: quic::SendStream<Bytes>>(
                 let _ = ack.send(Ok(()));
                 // Acknowledge the local shutdown immediately, but keep drain
                 // waiting until QUIC confirms FIN or the peer stops receiving.
-                return send
-                    .stopped
-                    .as_mut()
+                return poll_fn(|cx| send.stream.poll_stopped(cx))
                     .await
                     .map(|_| ())
                     .map_err(Error::new_h3);

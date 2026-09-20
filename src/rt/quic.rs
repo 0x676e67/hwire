@@ -2,16 +2,14 @@
 //!
 //! A connection provides independent stream openers and stream IDs, not a single
 //! byte stream. The traits do not create UDP sockets, perform TLS, or choose a
-//! runtime. Adapters provide unframed writes and an owned stop notification
-//! so cancellation remains observable after HTTP/3 takes ownership of a stream.
+//! runtime. Adapters provide unframed writes and a pollable stop notification
+//! that HTTP/3 forwards, so cancellation remains observable after it takes
+//! ownership of a stream.
 //!
 //! Every poll method returning `Pending` must arrange for the current task to
 //! wake when progress or a terminal error becomes observable. Implementations
 //! must retain any pending backend operation needed to preserve that wakeup.
-use std::{
-    future::Future,
-    task::{Context, Poll},
-};
+use std::task::{Context, Poll};
 
 use bytes::Buf;
 pub use http3::quic::{
@@ -92,14 +90,14 @@ pub trait SendStream<B: Buf> {
     ) -> Poll<Result<usize, StreamError>>;
 
     /// Observes peer STOP_SENDING independently of pending application writes.
-    /// The owned future must resolve to `Ok(Some(code))` on STOP_SENDING,
-    /// `Ok(None)` once all sent data and FIN are acknowledged, or `Err` on failure.
-    /// It must remain usable while the send half is owned by HTTP/3.
+    /// Resolves to `Ok(Some(code))` on STOP_SENDING, `Ok(None)` once all sent
+    /// data and FIN are acknowledged, or `Err` on failure. It never changes the
+    /// stream and must work before and after [`Self::poll_finish`].
     ///
     /// The HTTP/3 driver relies on this completion to release each request's
     /// active slot and finish graceful shutdown. Remaining pending after FIN
     /// acknowledgment prevents both from completing.
-    fn stopped(&self) -> impl Future<Output = Result<Option<u64>, StreamError>> + Send + 'static;
+    fn poll_stopped(&mut self, cx: &mut Context<'_>) -> Poll<Result<Option<u64>, StreamError>>;
 
     /// Submits FIN after previously accepted bytes; this does not await an ACK.
     fn poll_finish(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), StreamError>>;

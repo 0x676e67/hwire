@@ -1,10 +1,4 @@
-use std::{
-    collections::BTreeMap,
-    future::Future,
-    pin::Pin,
-    sync::{Arc, Mutex},
-    task::{ready, Context, Poll},
-};
+use std::task::{ready, Context, Poll};
 
 use bytes::Buf;
 use http3::quic::{self as h3, WriteBuf};
@@ -12,46 +6,11 @@ use http3::quic::{self as h3, WriteBuf};
 use crate::rt::quic;
 
 #[derive(Clone)]
-pub(crate) struct Transport<T>(pub(crate) T, pub(crate) Stops);
-
-pub(super) type Stopped =
-    Pin<Box<dyn Future<Output = Result<Option<u64>, quic::StreamError>> + Send>>;
-
-#[derive(Clone, Default)]
-pub(crate) struct Stops(Arc<Mutex<BTreeMap<u64, Stopped>>>);
-
-struct Registration {
-    stops: Stops,
-    id: u64,
-}
-
-// ===== impl Stops =====
-
-impl Stops {
-    pub(super) fn take(&self, id: h3::StreamId) -> Option<Stopped> {
-        self.0
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&id.into_inner())
-    }
-}
-
-// ===== impl Registration =====
-
-impl Drop for Registration {
-    fn drop(&mut self) {
-        self.stops
-            .0
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&self.id);
-    }
-}
+pub(crate) struct Transport<T>(pub(crate) T);
 
 pub(crate) struct Stream<T, B> {
     inner: T,
     pending: Option<WriteBuf<B>>,
-    registration: Option<Registration>,
 }
 
 fn closed() -> h3::ConnectionErrorIncoming {
@@ -92,7 +51,7 @@ impl<B: Buf, Q: quic::Connection<B>> h3::Connection<B> for Transport<Q> {
     }
 
     fn opener(&self) -> Self::OpenStreams {
-        Transport(self.0.opener(), self.1.clone())
+        Transport(self.0.opener())
     }
 }
 
@@ -105,23 +64,7 @@ impl<B: Buf, Q: quic::OpenStreams<B>> h3::OpenStreams<B> for Transport<Q> {
         &mut self,
         cx: &mut Context<'_>,
     ) -> Poll<Result<Self::BidiStream, h3::StreamErrorIncoming>> {
-        self.0.poll_open_bidi(cx).map_ok(|inner| {
-            use quic::SendStream;
-            let id = inner.send_id().into_inner();
-            // Capture cancellation before HEADERS consumes the stream. The guard
-            // removes it if initialization is canceled; exchange takes it on success.
-            self.1
-                 .0
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .insert(id, Box::pin(inner.stopped()));
-            let mut stream = Stream::new(inner);
-            stream.registration = Some(Registration {
-                stops: self.1.clone(),
-                id,
-            });
-            stream
-        })
+        self.0.poll_open_bidi(cx).map_ok(Stream::new)
     }
 
     fn poll_open_send(
@@ -143,7 +86,6 @@ impl<T, B> Stream<T, B> {
         Self {
             inner,
             pending: None,
-            registration: None,
         }
     }
 }
@@ -182,6 +124,13 @@ impl<T: quic::SendStream<B>, B: Buf> h3::SendStream<B> for Stream<T, B> {
     fn poll_finish(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), h3::StreamErrorIncoming>> {
         ready!(h3::SendStream::poll_ready(self, cx))?;
         self.inner.poll_finish(cx)
+    }
+
+    fn poll_stopped(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<Option<u64>, h3::StreamErrorIncoming>> {
+        self.inner.poll_stopped(cx)
     }
 
     fn reset(&mut self, code: u64) {
@@ -235,7 +184,6 @@ impl<T: quic::BidiStream<B>, B: Buf> h3::BidiStream<B> for Stream<T, B> {
             Stream {
                 inner: send,
                 pending: self.pending,
-                registration: self.registration,
             },
             Stream::new(recv),
         )

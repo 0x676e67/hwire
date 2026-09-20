@@ -20,6 +20,9 @@ type Opening<T> = Pin<Box<dyn Future<Output = Result<T, backend::ConnectionError
 
 type Incoming<T> = Pin<Box<dyn Stream<Item = Result<T, backend::ConnectionError>> + Send>>;
 
+type Stopped =
+    Pin<Box<dyn Future<Output = Result<Option<backend::VarInt>, backend::StoppedError>> + Send>>;
+
 /// Owns the incoming streams of one established QUIC connection.
 /// Use one adapter per HTTP/3 connection and keep other stream readers inactive.
 pub struct Connection {
@@ -41,6 +44,7 @@ pub struct OpenStreams {
 pub struct SendStream {
     inner: backend::SendStream,
     id: StreamId,
+    stopped: Option<Stopped>,
 }
 
 /// Receives owned chunks from one QUIC stream direction.
@@ -198,6 +202,7 @@ impl SendStream {
         Ok(Self {
             id: stream_id(inner.id())?,
             inner,
+            stopped: None,
         })
     }
 }
@@ -214,19 +219,22 @@ impl<B: Buf> rt::SendStream<B> for SendStream {
         Poll::Ready(Ok(written))
     }
 
-    fn stopped(&self) -> impl Future<Output = Result<Option<u64>, StreamError>> + Send + 'static {
-        let stopped = self.inner.stopped();
-        async move {
-            stopped
-                .await
+    fn poll_stopped(&mut self, cx: &mut Context<'_>) -> Poll<Result<Option<u64>, StreamError>> {
+        let stopped = self
+            .stopped
+            .get_or_insert_with(|| Box::pin(self.inner.stopped()));
+        let result = ready!(stopped.as_mut().poll(cx));
+        self.stopped = None;
+        Poll::Ready(
+            result
                 .map(|code| code.map(backend::VarInt::into_inner))
                 .map_err(|error| match error {
                     backend::StoppedError::ConnectionLost(error) => connection_stream_error(error),
                     error @ backend::StoppedError::ZeroRttRejected => {
                         StreamError::Unknown(Box::new(error))
                     }
-                })
-        }
+                }),
+        )
     }
 
     fn poll_finish(&mut self, _: &mut Context<'_>) -> Poll<Result<(), StreamError>> {
@@ -308,8 +316,8 @@ impl<B: Buf> rt::SendStream<B> for BidiStream {
         <SendStream as rt::SendStream<B>>::poll_send(&mut self.send, cx, data)
     }
 
-    fn stopped(&self) -> impl Future<Output = Result<Option<u64>, StreamError>> + Send + 'static {
-        <SendStream as rt::SendStream<B>>::stopped(&self.send)
+    fn poll_stopped(&mut self, cx: &mut Context<'_>) -> Poll<Result<Option<u64>, StreamError>> {
+        <SendStream as rt::SendStream<B>>::poll_stopped(&mut self.send, cx)
     }
 
     fn poll_finish(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), StreamError>> {

@@ -129,6 +129,7 @@ incremental = false
 codegen-units = 1
 incremental = false
 
-# PR #104 includes #103's lifecycle fixes and preserves QPACK Base after eviction.
+# PR #107 adds `SendStream::poll_stopped` on top of the 0.1.1 fixes.
 [patch.crates-io]
-http3 = { git = "https://github.com/0x676e67/http3", rev = "e7103dc594a88b8473a1f6af477c5e17266767cb" }
+http3 = { git = "https://github.com/0x676e67/http3", rev = "95b997be133faaf5e87008af861c9ddfe6098ff3" }
+http3-quic = { git = "https://github.com/0x676e67/http3", rev = "95b997be133faaf5e87008af861c9ddfe6098ff3" }

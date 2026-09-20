@@ -23,7 +23,7 @@ use crate::{
     proto::http3::{
         client,
         dispatch::{Active, Shared},
-        transport::{Stops, Transport},
+        transport::Transport,
         Http3Options,
     },
     rt::{quic, Executor},
@@ -44,7 +44,6 @@ pub struct Connection<Q: quic::Connection<Bytes>, B, E> {
     driver: Box<http3::client::Connection<Transport<Q>, Bytes>>,
     sender: http3::client::SendRequest<Transport<Q::OpenStreams>, Bytes>,
     opener: Q::OpenStreams,
-    stops: Stops,
     rx: dispatch::Receiver<Request<B>, Response<Incoming>>,
     shared: Arc<Shared>,
     exec: E,
@@ -251,9 +250,8 @@ impl<E> Builder<E> {
         }
         #[cfg(feature = "http3-datagram")]
         builder.enable_datagram(datagrams.is_some());
-        let stops = Stops::default();
         let (driver, sender) = builder
-            .build(Transport(quic, stops.clone()))
+            .build(Transport(quic))
             .await
             .map_err(Error::new_h3)?;
         #[cfg(feature = "http3-datagram")]
@@ -270,7 +268,6 @@ impl<E> Builder<E> {
             Connection {
                 driver: Box::new(driver),
                 sender,
-                stops,
                 opener: opening.0.take().ok_or_else(Error::new_canceled)?,
                 #[cfg(feature = "http3-datagram")]
                 datagrams,
@@ -410,7 +407,6 @@ where
                     let active = Active(this.shared.clone());
                     this.exec.execute(Box::pin(client::exchange(
                         this.sender.clone(),
-                        this.stops.clone(),
                         dispatch::Envelope::new(request, callback),
                         active,
                     )));
