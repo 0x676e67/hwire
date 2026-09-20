@@ -10,15 +10,23 @@ use bytes::{Buf, Bytes};
 use futures_util::{future::try_join, TryFutureExt};
 use http::Response;
 use http3::quic;
-use http_body::Body;
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
     sync::{mpsc, oneshot},
 };
 use tokio_util::sync::PollSender;
 
-use super::client::{cooperate, BodyGuard, Failure, RecvGuard, ResponseGuard, SendGuard, CHUNK};
-use crate::{body::Incoming, Error, Result};
+use super::client::{cooperate, Failure, RecvGuard, ResponseGuard, SendGuard, CHUNK};
+use crate::{
+    body::{self, Incoming, Sender},
+    Error, Result,
+};
+
+/// Reports an interrupted tunnel download instead of exposing a clean EOF.
+struct BodyGuard {
+    sender: Option<Sender>,
+    failure: Arc<Failure>,
+}
 
 enum Write {
     Data(Bytes),
@@ -27,7 +35,7 @@ enum Write {
 }
 
 struct Io {
-    incoming: Incoming,
+    incoming: body::Receiver,
     data: Bytes,
     sender: PollSender<Write>,
     pending: Option<(bool, oneshot::Receiver<Result<()>>)>,
@@ -49,7 +57,7 @@ where
     S: quic::SendStream<Bytes>,
     R: quic::RecvStream,
 {
-    let (sender, incoming) = Incoming::h3();
+    let (sender, incoming) = body::channel(false);
     let (tx, rx) = mpsc::channel(1);
     let io = Io {
         incoming,
@@ -194,6 +202,16 @@ fn closed() -> io::Error {
     io::Error::new(io::ErrorKind::BrokenPipe, "HTTP/3 tunnel closed")
 }
 
+// ===== impl BodyGuard =====
+
+impl Drop for BodyGuard {
+    fn drop(&mut self) {
+        if let Some(sender) = self.sender.as_mut() {
+            sender.send_error(self.failure.get());
+        }
+    }
+}
+
 // ===== impl Io =====
 
 impl Io {
@@ -252,12 +270,8 @@ impl AsyncRead for Io {
             if self.read_closed {
                 return Poll::Ready(Ok(()));
             }
-            match ready!(Pin::new(&mut self.incoming).poll_frame(cx)) {
-                Some(Ok(frame)) => {
-                    if let Ok(data) = frame.into_data() {
-                        self.data = data;
-                    }
-                }
+            match ready!(self.incoming.poll_next(cx)) {
+                Some(Ok(data)) => self.data = data,
                 Some(Err(error)) => {
                     self.read_closed = true;
                     return Poll::Ready(Err(io::Error::other(error)));

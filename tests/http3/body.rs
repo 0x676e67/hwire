@@ -1,5 +1,116 @@
 use super::*;
 
+#[derive(Debug)]
+struct FailUpload(Option<oneshot::Receiver<()>>);
+
+impl http_body::Body for FailUpload {
+    type Data = Bytes;
+
+    type Error = std::io::Error;
+
+    fn poll_frame(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<http_body::Frame<Bytes>, Self::Error>>> {
+        let Some(fail) = self.0.as_mut() else {
+            return std::task::Poll::Ready(None);
+        };
+        std::task::ready!(std::pin::Pin::new(fail).poll(cx)).unwrap();
+        self.0 = None;
+        std::task::Poll::Ready(Some(Err(std::io::Error::other(
+            "upload failed after response",
+        ))))
+    }
+}
+
+#[tokio::test]
+async fn upload_failure_wakes_pending_response_body_and_releases_request() {
+    bounded(async {
+        let Pair {
+            mut tx,
+            driver,
+            mut server,
+            _endpoints,
+            ..
+        } = pair_with::<FailUpload, _>(
+            Http3Options::builder().max_concurrent_requests(1).build(),
+            Exec,
+        )
+        .await;
+        let drive = tokio::spawn(driver);
+        let peer = tokio::spawn(async move {
+            let (_, mut stream) = server
+                .accept()
+                .await
+                .unwrap()
+                .unwrap()
+                .resolve_request()
+                .await
+                .unwrap();
+            stream.send_response(Response::new(())).await.unwrap();
+            assert!(matches!(stream.recv_data().await,
+                Err(h3::error::StreamError::RemoteTerminate { code, .. })
+                    if code == h3::error::Code::H3_REQUEST_CANCELLED));
+            drop(stream);
+            let (request, mut stream) = server
+                .accept()
+                .await
+                .unwrap()
+                .unwrap()
+                .resolve_request()
+                .await
+                .unwrap();
+            assert_eq!(request.uri().path(), "/healthy");
+            assert!(stream.recv_data().await.unwrap().is_none());
+            stream.send_response(Response::new(())).await.unwrap();
+            stream.finish().await.unwrap();
+            drop(stream);
+            let _ = server.accept().await;
+        });
+        let (fail, failed) = oneshot::channel();
+        let response = tx
+            .try_send_request(
+                Request::post("https://localhost/failing")
+                    .body(FailUpload(Some(failed)))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let mut body = response.into_body();
+        let mut frame = tokio_test::task::spawn(body.frame());
+        assert!(frame.poll().is_pending());
+        fail.send(()).unwrap();
+        // Awaiting this same registered frame must wake on the local upload
+        // failure, even though the peer sends neither DATA nor a response FIN.
+        let error = std::future::poll_fn(|cx| std::pin::Pin::new(&mut frame).poll(cx))
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert!(error.is_user(), "{error:?}");
+        drop(frame);
+        assert!(body.frame().await.is_none());
+        let response = tx
+            .try_send_request(
+                Request::get("https://localhost/healthy")
+                    .body(FailUpload(None))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .is_empty());
+        drop(tx);
+        drive.await.unwrap().unwrap();
+        peer.await.unwrap();
+    })
+    .await;
+}
+
 #[tokio::test]
 async fn graceful_shutdown_returns_queued_requests_and_honors_external_deadline() {
     for expire in [false, true] {

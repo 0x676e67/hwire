@@ -2,6 +2,7 @@
 
 pub use http3::SettingId;
 
+pub(crate) mod body;
 pub(crate) mod client;
 #[cfg(feature = "http3-datagram")]
 pub(crate) mod datagram;

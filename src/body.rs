@@ -65,6 +65,8 @@
 //! [`http_body::Body`]: https://docs.rs/http-body
 
 mod chan;
+#[cfg(feature = "http3")]
+pub(crate) use self::chan::{channel, Receiver};
 mod incoming;
 mod length;
 

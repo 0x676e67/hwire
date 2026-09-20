@@ -1270,7 +1270,15 @@ async fn peer_stop_cancels_upload(ready_empty: bool) {
 }
 
 #[tokio::test]
-async fn dropped_unpolled_response_after_fin_cancels_pending_upload() {
+async fn dropped_undelivered_response_cancels_pending_upload() {
+    struct ResponseReady(tokio::sync::Notify);
+
+    impl futures_util::task::ArcWake for ResponseReady {
+        fn wake_by_ref(this: &std::sync::Arc<Self>) {
+            this.0.notify_one();
+        }
+    }
+
     bounded(async {
         let (_, server_config, client_config) = tls::config();
         let (client, server, _endpoints) = quic_pair(server_config, client_config).await;
@@ -1289,6 +1297,7 @@ async fn dropped_unpolled_response_after_fin_cancels_pending_upload() {
         let (polled, body_pending) = oneshot::channel();
         let (dropped, body_dropped) = oneshot::channel();
         let (reset_seen, reset_observed) = oneshot::channel();
+        let (finished, fin_sent) = oneshot::channel();
         let server_task = tokio::spawn(async move {
             let resolver = server.accept().await.unwrap().unwrap();
             let stream_task = tokio::spawn(async move {
@@ -1296,6 +1305,7 @@ async fn dropped_unpolled_response_after_fin_cancels_pending_upload() {
                 body_pending.await.unwrap();
                 stream.send_response(Response::new(())).await.unwrap();
                 stream.finish().await.unwrap();
+                finished.send(()).unwrap();
                 let result = stream.recv_data().await;
                 assert!(matches!(result,
                     Err(h3::error::StreamError::RemoteTerminate { code, .. })
@@ -1305,19 +1315,28 @@ async fn dropped_unpolled_response_after_fin_cancels_pending_upload() {
             let _ = server.accept().await;
             stream_task.await.unwrap();
         });
-        let response = tx.try_send_request(
-            Request::post("https://localhost/response-before-upload")
-                .body(UnfinishedBody {
-                    ready_empty: false,
-                    polled: Some(polled),
-                    dropped: Some(dropped),
-                })
-                .unwrap(),
+        let mut response = Box::pin(
+            tx.try_send_request(
+                Request::post("https://localhost/response-before-upload")
+                    .body(UnfinishedBody {
+                        ready_empty: false,
+                        polled: Some(polled),
+                        dropped: Some(dropped),
+                    })
+                    .unwrap(),
+            ),
         );
-        // The response has entered the callback and its receive side reached
-        // FIN, but the caller has never polled the response future. Dropping
-        // that future must still cancel the independently pending upload.
-        pause.received_fin().await;
+        let ready = std::sync::Arc::new(ResponseReady(tokio::sync::Notify::new()));
+        let waker = futures_util::task::waker(ready.clone());
+        assert!(response
+            .as_mut()
+            .poll(&mut std::task::Context::from_waker(&waker))
+            .is_pending());
+        // Only the response callback can wake this future. Wait for delivery
+        // without polling it again, so Incoming remains owned by the callback.
+        // FIN is sent by the peer; the application has not polled the body.
+        fin_sent.await.unwrap();
+        ready.0.notified().await;
         drop(response);
         body_dropped.await.unwrap();
         reset_observed.await.unwrap();
