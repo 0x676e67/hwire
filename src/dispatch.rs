@@ -151,6 +151,8 @@ impl<T, U> Clone for UnboundedSender<T, U> {
     }
 }
 
+/// Receives queued requests and their response callbacks for the connection driver.
+/// Signals demand while waiting for requests, and closure when closed or dropped.
 pub(crate) struct Receiver<T, U> {
     inner: mpsc::UnboundedReceiver<Envelope<T, U>>,
     taker: want::Taker,
@@ -226,6 +228,8 @@ impl<T, U> Drop for Envelope<T, U> {
     }
 }
 
+/// Completes a request with a response or error and observes caller cancellation.
+/// Dropping it without completion reports that the dispatch task went away.
 pub(crate) struct Callback<T, U> {
     tx: Option<oneshot::Sender<Result<U, TrySendError<T>>>>,
     #[cfg(feature = "http3")]
