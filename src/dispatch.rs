@@ -333,6 +333,8 @@ impl<T> TrySendError<T> {
 }
 
 pin_project! {
+    /// Drives an HTTP/2 response future and delivers its result through the callback.
+    /// Resets the request stream if its caller cancels while the response is pending.
     pub(crate) struct SendWhen<B, E>
     where
         B: Body,
