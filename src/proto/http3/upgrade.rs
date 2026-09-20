@@ -50,7 +50,7 @@ where
     S: quic::SendStream<Bytes>,
     R: quic::RecvStream,
 {
-    let (sender, incoming) = Incoming::h3();
+    let (sender, incoming) = Incoming::h3(crate::body::DecodedLength::CHUNKED);
     let (tx, rx) = mpsc::channel(1);
     let io = Io {
         incoming,

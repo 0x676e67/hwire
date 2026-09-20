@@ -1,3 +1,5 @@
+use http_body::Body;
+
 use super::*;
 
 struct Preserve;
@@ -140,6 +142,91 @@ async fn request_content_length_matches_method_and_body() {
             .await
             .unwrap();
         }
+        drop(tx);
+        drive.await.unwrap().unwrap();
+        peer.await.unwrap();
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn response_size_hint_tracks_data_and_keeps_trailers() {
+    bounded(async {
+        let Pair {
+            mut tx,
+            driver,
+            mut server,
+            _endpoints,
+            ..
+        } = pair(Http3Options::default()).await;
+        let drive = tokio::spawn(driver);
+        let (resume, resumed) = oneshot::channel();
+        let peer = tokio::spawn(async move {
+            let (_, mut stream) = server
+                .accept()
+                .await
+                .unwrap()
+                .unwrap()
+                .resolve_request()
+                .await
+                .unwrap();
+            stream
+                .send_response(
+                    Response::builder()
+                        .header("content-length", "6")
+                        .body(())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            stream.send_data(Bytes::from_static(b"one")).await.unwrap();
+            resumed.await.unwrap();
+            stream.send_data(Bytes::from_static(b"two")).await.unwrap();
+            let mut trailers = HeaderMap::new();
+            trailers.insert("x-finished", "yes".parse().unwrap());
+            stream.send_trailers(trailers).await.unwrap();
+            stream.finish().await.unwrap();
+            let _ = server.accept().await;
+        });
+        let response = tx
+            .try_send_request(
+                Request::get("https://localhost/")
+                    .body(Full::new(Bytes::new()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let mut body = response.into_body();
+        assert_eq!(body.size_hint().exact(), Some(6));
+        let mut left = 6;
+        while left > 3 {
+            let data = body.frame().await.unwrap().unwrap().into_data().unwrap();
+            left -= data.len() as u64;
+            assert_eq!(body.size_hint().exact(), Some(left));
+        }
+        assert_eq!(left, 3);
+        resume.send(()).unwrap();
+        while left > 0 {
+            let data = body.frame().await.unwrap().unwrap().into_data().unwrap();
+            left -= data.len() as u64;
+            assert_eq!(body.size_hint().exact(), Some(left));
+        }
+        assert!(
+            !body.is_end_stream(),
+            "zero remaining bytes must not hide trailers"
+        );
+        assert_eq!(
+            body.frame()
+                .await
+                .unwrap()
+                .unwrap()
+                .into_trailers()
+                .unwrap()["x-finished"],
+            "yes"
+        );
+        assert!(body.frame().await.is_none());
+        assert!(body.is_end_stream());
+        assert_eq!(body.size_hint().exact(), Some(0));
         drop(tx);
         drive.await.unwrap().unwrap();
         peer.await.unwrap();

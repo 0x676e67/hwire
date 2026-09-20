@@ -33,6 +33,7 @@ enum Kind {
     #[cfg(feature = "http3")]
     H3 {
         rx: chan::Receiver,
+        content_length: DecodedLength,
         done: bool,
     },
     Empty,
@@ -73,12 +74,16 @@ impl Incoming {
     }
 
     #[cfg(feature = "http3")]
-    pub(crate) fn h3() -> (Sender, Self) {
+    pub(crate) fn h3(content_length: DecodedLength) -> (Sender, Self) {
         let (tx, rx) = chan::channel(false);
         (
             tx,
             Self {
-                kind: Kind::H3 { rx, done: false },
+                kind: Kind::H3 {
+                    rx,
+                    content_length,
+                    done: false,
+                },
             },
         )
     }
@@ -177,13 +182,17 @@ impl Body for Incoming {
             #[cfg(feature = "http3")]
             Kind::H3 {
                 ref mut rx,
+                ref mut content_length,
                 ref mut done,
             } => {
                 if *done {
                     return Poll::Ready(None);
                 }
                 match ready!(rx.poll_next(cx)) {
-                    Some(Ok(data)) => Poll::Ready(Some(Ok(Frame::data(data)))),
+                    Some(Ok(data)) => {
+                        content_length.sub_if(data.len() as u64);
+                        Poll::Ready(Some(Ok(Frame::data(data))))
+                    }
                     Some(Err(error)) => {
                         *done = true;
                         Poll::Ready(Some(Err(error)))
@@ -216,11 +225,17 @@ impl Body for Incoming {
                 .into_opt()
                 .map_or_else(SizeHint::default, SizeHint::with_exact),
             #[cfg(feature = "http3")]
-            Kind::H3 { done, .. } => {
+            Kind::H3 {
+                content_length,
+                done,
+                ..
+            } => {
                 if done {
                     SizeHint::with_exact(0)
                 } else {
-                    SizeHint::default()
+                    content_length
+                        .into_opt()
+                        .map_or_else(SizeHint::default, SizeHint::with_exact)
                 }
             }
             Kind::Empty => SizeHint::with_exact(0),

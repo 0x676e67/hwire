@@ -416,7 +416,7 @@ async fn download<S: quic::RecvStream, B>(
         remaining = Some(0);
     }
     *headers.version_mut() = http::Version::HTTP_3;
-    let (sender, incoming) = Incoming::h3();
+    let (sender, incoming) = Incoming::h3(remaining.into());
     let mut body = BodyGuard {
         sender: Some(sender),
         failure,
