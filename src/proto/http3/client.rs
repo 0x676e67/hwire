@@ -660,6 +660,13 @@ impl<S: quic::SendStream<Bytes>> Drop for SendGuard<S> {
 impl<S: quic::RecvStream> Drop for RecvGuard<S> {
     fn drop(&mut self) {
         if !self.finished {
+            // Late Datagrams after receive cancellation must be discarded,
+            // without canceling an upload that still owns the send direction.
+            // https://www.rfc-editor.org/rfc/rfc9297.html#section-2.1
+            #[cfg(feature = "http3-datagram")]
+            if let Some(datagrams) = &self.datagrams {
+                datagrams.close_recv();
+            }
             let code = self.code;
             #[cfg(feature = "http3-datagram")]
             let code = if self

@@ -238,3 +238,121 @@ fn assert_datagram_cause(error: &wreq_proto::Error) {
     }
     panic!("missing HTTP Datagram connection cause: {error:?}");
 }
+
+#[tokio::test]
+async fn late_datagram_after_response_drop_preserves_upload() {
+    bounded(async {
+        let (_, server_config, client_config) = tls::config();
+        let (client, server, _endpoints) = quic_pair(server_config, client_config).await;
+        let observed = client.clone();
+        let peer = server.clone();
+        let jobs = Jobs::default();
+        let ((mut tx, mut driver), mut server) = tokio::join!(
+            async {
+                Builder::new(jobs.clone())
+                    .handshake_with_datagrams(native::Connection::new(client))
+                    .await
+                    .unwrap()
+            },
+            async {
+                h3::server::builder()
+                    .enable_datagram(true)
+                    .build::<_, Bytes>(h3_quinn::Connection::new(server))
+                    .await
+                    .unwrap()
+            }
+        );
+        let (upload, ready) = oneshot::channel();
+        let body = http_body_util::StreamBody::new(futures_util::stream::once(async move {
+            ready.await.unwrap();
+            Ok::<_, std::convert::Infallible>(http_body::Frame::data(Bytes::from_static(b"upload")))
+        }));
+        let (dropped, body_dropped) = oneshot::channel();
+        let (finished, upload_received) = oneshot::channel();
+        let server_task = tokio::spawn(async move {
+            let resolver = server.accept().await.unwrap().unwrap();
+            let request = tokio::spawn(async move {
+                let (_, stream) = resolver.resolve_request().await.unwrap();
+                let id = stream.id().into_inner();
+                let (mut send, mut recv) = stream.split();
+                send.send_response(Response::new(())).await.unwrap();
+                body_dropped.await.unwrap();
+                loop {
+                    if let Err(error) = send.send_data(Bytes::from(vec![1; 64 * 1024])).await {
+                        assert!(matches!(error,
+                            h3::error::StreamError::RemoteTerminate { code, .. }
+                                if code == h3::error::Code::H3_REQUEST_CANCELLED));
+                        break;
+                    }
+                }
+                // Inject a late packet after the receive direction was abandoned.
+                // It must be discarded even though the upload remains active.
+                // https://www.rfc-editor.org/rfc/rfc9297.html#section-2.1
+                peer.send_datagram(Bytes::from(vec![(id / 4) as u8, 7]))
+                    .unwrap();
+                let mut received = BytesMut::new();
+                while let Some(mut data) = recv.recv_data().await.unwrap() {
+                    received.extend_from_slice(&data.copy_to_bytes(data.remaining()));
+                }
+                assert_eq!(received, "upload");
+                assert!(recv.recv_trailers().await.unwrap().is_none());
+                finished.send(()).unwrap();
+            });
+            let _ = server.accept().await;
+            request.await.unwrap();
+        });
+        let response = progress(
+            tx.try_send_request(
+                Request::post("https://localhost/late-datagram")
+                    .body(body)
+                    .unwrap(),
+            ),
+            &mut driver,
+            &jobs,
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{}", error.error()));
+        drop(response);
+        dropped.send(()).unwrap();
+        progress(
+            poll_fn(|_| {
+                if observed.stats().frame_rx.datagram > 0 {
+                    Poll::Ready(())
+                } else {
+                    Poll::Pending
+                }
+            }),
+            &mut driver,
+            &jobs,
+        )
+        .await;
+        // The packet is now in QUIC's receive queue. Poll its HTTP routing and
+        // request cancellation before releasing the pending upload.
+        progress(std::future::ready(()), &mut driver, &jobs).await;
+        upload.send(()).expect("late datagram must preserve upload");
+        progress(upload_received, &mut driver, &jobs).await.unwrap();
+        drop(tx);
+        poll_fn(|cx| {
+            jobs.poll(cx);
+            Pin::new(&mut driver).poll(cx)
+        })
+        .await
+        .unwrap();
+        server_task.await.unwrap();
+    })
+    .await;
+}
+
+async fn progress<F, D>(future: F, driver: &mut D, jobs: &Jobs) -> F::Output
+where
+    F: Future,
+    D: Future<Output = Result<(), wreq_proto::Error>> + Unpin,
+{
+    let mut future = std::pin::pin!(future);
+    poll_fn(|cx| {
+        assert!(Pin::new(&mut *driver).poll(cx).is_pending());
+        jobs.poll(cx);
+        future.as_mut().poll(cx)
+    })
+    .await
+}
