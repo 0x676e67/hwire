@@ -373,14 +373,12 @@ async fn response_headers<S: quic::RecvStream>(recv: &mut RecvGuard<S>) -> Resul
         if !headers.status().is_informational() {
             break headers;
         }
-        // Informational responses cannot contain Content-Length, even zero.
-        // https://www.rfc-editor.org/rfc/rfc9110.html#section-8.6
-        if headers.headers().contains_key(header::CONTENT_LENGTH) {
+        // Ignore the length on a response without content, but still validate
+        // the field syntax. RFC 9114, Section 4.1.2.
+        // https://www.rfc-editor.org/rfc/rfc9114.html#section-4.1.2
+        content_length(headers.headers()).inspect_err(|_| {
             recv.code = Code::H3_MESSAGE_ERROR;
-            return Err(Error::new_h3(
-                "informational response contains content-length",
-            ));
-        }
+        })?;
         cooperate(&mut budget).await;
     };
     Ok(headers)
@@ -403,10 +401,6 @@ async fn download<S: quic::RecvStream, B>(
         // https://www.rfc-editor.org/rfc/rfc9114.html#section-4.1.2
         recv.code = Code::H3_MESSAGE_ERROR;
     })?;
-    if headers.status() == StatusCode::NO_CONTENT && remaining.is_some() {
-        recv.code = Code::H3_MESSAGE_ERROR;
-        return Err(Error::new_h3("204 response contains content-length"));
-    }
     if head
         || matches!(
             headers.status(),

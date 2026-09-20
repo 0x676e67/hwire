@@ -1678,7 +1678,7 @@ async fn invalid_response_lengths_signal_message_error_and_preserve_connection()
         let (rejected, mut notified) = tokio::sync::mpsc::channel(1);
         let (observed, mut confirmed) = tokio::sync::mpsc::channel(1);
         let server_task = tokio::spawn(async move {
-            for (status, length) in [(200, "invalid"), (200, "1, 2"), (103, "0"), (204, "0")] {
+            for (status, length) in [(200, "invalid"), (200, "1, 2"), (103, "invalid"), (204, "invalid")] {
                 let resolver = server.accept().await.unwrap().unwrap();
                 let (_, mut stream) = resolver.resolve_request().await.unwrap();
                 while stream.recv_data().await.unwrap().is_some() {}
@@ -1734,7 +1734,13 @@ async fn head_204_and_304_end_without_content() {
         } = pair(Http3Options::default()).await;
         let client_driver = tokio::spawn(driver);
         let server_task = tokio::spawn(async move {
-            for (status, length) in [(200, Some("123")), (204, None), (304, Some("123"))] {
+            for (status, length) in [
+                (200, Some("123")),
+                (204, None),
+                (204, Some("0")),
+                (204, Some("123")),
+                (304, Some("123")),
+            ] {
                 let resolver = server.accept().await.unwrap().unwrap();
                 let (_, mut stream) = resolver.resolve_request().await.unwrap();
                 let mut response = Response::builder().status(status);
@@ -1749,7 +1755,13 @@ async fn head_204_and_304_end_without_content() {
             }
             let _ = server.accept().await;
         });
-        for (method, status) in [("HEAD", 200), ("GET", 204), ("GET", 304)] {
+        for (method, status) in [
+            ("HEAD", 200),
+            ("GET", 204),
+            ("GET", 204),
+            ("GET", 204),
+            ("GET", 304),
+        ] {
             let response = tx
                 .try_send_request(
                     Request::builder()
@@ -1762,6 +1774,7 @@ async fn head_204_and_304_end_without_content() {
                 .unwrap();
             assert_eq!(response.status().as_u16(), status);
             let mut body = response.into_body();
+            assert_eq!(http_body::Body::size_hint(&body).exact(), Some(0));
             assert!(body.frame().await.is_none());
             assert!(http_body::Body::is_end_stream(&body));
         }

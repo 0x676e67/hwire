@@ -150,6 +150,71 @@ async fn request_content_length_matches_method_and_body() {
 }
 
 #[tokio::test]
+async fn informational_content_length_does_not_set_final_body_length() {
+    bounded(async {
+        let Pair {
+            mut tx,
+            driver,
+            mut server,
+            _endpoints,
+            ..
+        } = pair(Http3Options::default()).await;
+        let drive = tokio::spawn(driver);
+        let peer = tokio::spawn(async move {
+            let (_, mut stream) = server
+                .accept()
+                .await
+                .unwrap()
+                .unwrap()
+                .resolve_request()
+                .await
+                .unwrap();
+            for length in ["0", "123"] {
+                stream
+                    .send_response(
+                        Response::builder()
+                            .status(103)
+                            .header("content-length", length)
+                            .body(())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+            }
+            stream
+                .send_response(
+                    Response::builder()
+                        .header("content-length", "4")
+                        .body(())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            stream.send_data(Bytes::from_static(b"done")).await.unwrap();
+            stream.finish().await.unwrap();
+            let _ = server.accept().await;
+        });
+        let response = tx
+            .try_send_request(
+                Request::get("https://localhost/")
+                    .body(Full::new(Bytes::new()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        assert_eq!(
+            response.into_body().collect().await.unwrap().to_bytes(),
+            "done"
+        );
+        drop(tx);
+        drive.await.unwrap().unwrap();
+        peer.await.unwrap();
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn response_size_hint_tracks_data_and_keeps_trailers() {
     bounded(async {
         let Pair {
