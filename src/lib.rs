@@ -28,6 +28,10 @@
 //!   error code) and notifies the peer as its background tasks are driven rather than continuing to
 //!   deliver a response body that would be discarded. The shared connection stays usable for other
 //!   in-flight and future requests.
+//! - **HTTP/3**, if a stream has been opened, cancels its unfinished send and receive directions
+//!   with `H3_REQUEST_CANCELLED`, leaving the shared connection usable. After the response has been
+//!   delivered, dropping its body only cancels receiving; an unfinished upload can continue
+//!   independently.
 //!
 //! Keep driving the connection and its background tasks to complete cancellation.
 //!

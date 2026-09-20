@@ -1,6 +1,17 @@
 //! HTTP/3 configuration for externally established QUIC connections.
+//!
+//! Extended CONNECT and pseudo-header ordering use request extensions:
+//! ```
+//! use wreq_proto::http3::{Protocol, PseudoId, PseudoOrder};
+//!
+//! let request = http::Request::connect("https://example.com/tunnel")
+//!     .extension(Protocol::WEBSOCKET)
+//!     .extension(PseudoOrder::builder().push(PseudoId::Method).build())
+//!     .body(())?;
+//! # Ok::<(), http::Error>(())
+//! ```
 
-pub use http3::SettingId;
+pub use http3::{ext::Protocol, PseudoId, PseudoOrder, PseudoOrderBuilder, SettingId};
 
 pub(crate) mod client;
 #[cfg(feature = "http3-datagram")]
