@@ -15,16 +15,14 @@ use bytes::Bytes;
 use http::{Request, Response};
 use http3::{error::Code, ConnectionState};
 use http_body::Body;
-use tokio::sync::{mpsc, oneshot, OwnedSemaphorePermit, Semaphore};
-use tokio_util::sync::{CancellationToken, PollSemaphore};
 
 use crate::{
     body::Incoming,
-    dispatch::TrySendError,
+    dispatch::{self, TrySendError},
     error::BoxError,
     proto::http3::{
         client,
-        dispatch::{Active, Envelope, Shared},
+        dispatch::{Active, Shared},
         transport::{Stops, Transport},
         Http3Options,
     },
@@ -32,12 +30,9 @@ use crate::{
     Error, Result,
 };
 
-/// Sends requests through one HTTP/3 connection's bounded admission queue.
+/// The sender side of an established connection.
 pub struct SendRequest<B> {
-    tx: mpsc::UnboundedSender<Envelope<B>>,
-    shared: Arc<Shared>,
-    readiness: PollSemaphore,
-    permit: Option<OwnedSemaphorePermit>,
+    dispatch: dispatch::UnboundedSender<Request<B>, Response<Incoming>>,
 }
 
 /// Drives control streams and request dispatch until the connection closes.
@@ -50,7 +45,7 @@ pub struct Connection<Q: quic::Connection<Bytes>, B, E> {
     sender: http3::client::SendRequest<Transport<Q::OpenStreams>, Bytes>,
     opener: Q::OpenStreams,
     stops: Stops,
-    rx: mpsc::UnboundedReceiver<Envelope<B>>,
+    rx: dispatch::Receiver<Request<B>, Response<Incoming>>,
     shared: Arc<Shared>,
     exec: E,
     active_limit: usize,
@@ -66,53 +61,40 @@ pub struct Builder<E> {
 
 struct Opening<O: quic::OpenStreams<Bytes>>(Option<O>);
 
-struct CancelOnDrop(Option<CancellationToken>);
-
 // ===== impl SendRequest =====
 
 impl<B> Clone for SendRequest<B> {
     fn clone(&self) -> Self {
         Self {
-            tx: self.tx.clone(),
-            shared: self.shared.clone(),
-            readiness: PollSemaphore::new(self.shared.capacity.clone()),
-            permit: None,
+            dispatch: self.dispatch.clone(),
         }
     }
 }
 
 impl<B> SendRequest<B> {
-    /// Reserves one local queue slot, or fails when the connection is draining.
+    /// Checks whether the connection accepts requests.
     /// This does not reserve a QUIC stream or wait for peer stream credit.
-    pub fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<()>> {
+    pub fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<()>> {
         if self.is_closed() {
-            self.permit = None;
-            return Poll::Ready(Err(Error::new_closed()));
+            Poll::Ready(Err(Error::new_closed()))
+        } else {
+            Poll::Ready(Ok(()))
         }
-        if self.permit.is_none() {
-            self.permit = ready!(self.readiness.poll_acquire(cx));
-        }
-        Poll::Ready(
-            self.permit
-                .as_ref()
-                .map(|_| ())
-                .ok_or_else(Error::new_closed),
-        )
     }
 
-    /// Waits for one local queue slot; see [`Self::poll_ready`].
+    /// Waits until the dispatcher is ready; see [`Self::poll_ready`].
     pub async fn ready(&mut self) -> Result<()> {
         poll_fn(|cx| self.poll_ready(cx)).await
     }
 
-    /// Returns a readiness hint; another sender may consume unreserved capacity.
+    /// Returns a readiness hint; the connection may close before a request is sent.
     pub fn is_ready(&self) -> bool {
-        !self.is_closed() && (self.permit.is_some() || self.shared.capacity.available_permits() > 0)
+        self.dispatch.is_ready()
     }
 
     /// Whether the connection no longer accepts new requests.
     pub fn is_closed(&self) -> bool {
-        self.tx.is_closed() || self.shared.draining.load(Ordering::Acquire)
+        self.dispatch.is_closed()
     }
 
     /// Queues a request, returning it on failures before dispatch starts.
@@ -123,45 +105,26 @@ impl<B> SendRequest<B> {
         &mut self,
         request: Request<B>,
     ) -> impl Future<Output = Result<Response<Incoming>, TrySendError<Request<B>>>> {
-        let cancel = CancellationToken::new();
-        let mut guard = CancelOnDrop(Some(cancel.clone()));
-        let permit = self
-            .permit
-            .take()
-            .or_else(|| self.shared.capacity.clone().try_acquire_owned().ok());
-        let sent = if self.is_closed() || permit.is_none() {
-            Err(TrySendError {
-                error: Error::new_canceled().with("HTTP/3 connection is not ready"),
-                message: Some(request),
-            })
-        } else {
-            let (callback, response) = oneshot::channel();
-            let envelope = Envelope {
-                request: Some(request),
-                callback: Some(callback),
-                permit,
-                cancel,
-            };
-            self.tx
-                .send(envelope)
-                .map(|()| response)
-                .map_err(|mut error| TrySendError {
-                    error: Error::new_closed(),
-                    message: error.0.request.take(),
-                })
-        };
+        let sent = self.dispatch.try_send_cancelable(request);
         async move {
-            let result = match sent {
-                Ok(response) => response.await.unwrap_or_else(|_| {
-                    Err(TrySendError {
-                        error: Error::new_canceled(),
-                        message: None,
-                    })
+            match sent {
+                Ok((response, consumed)) => {
+                    let result = response.await.unwrap_or_else(|_| {
+                        Err(TrySendError {
+                            error: Error::new_canceled(),
+                            message: None,
+                        })
+                    });
+                    // Keep cancellation alive until the caller receives the response,
+                    // even if its body has already reached FIN in the callback.
+                    let _ = consumed.send(());
+                    result
+                }
+                Err(request) => Err(TrySendError {
+                    error: Error::new_canceled().with("connection was not ready"),
+                    message: Some(request),
                 }),
-                Err(error) => Err(error),
-            };
-            guard.disarm();
-            result
+            }
         }
     }
 }
@@ -257,10 +220,7 @@ impl<E> Builder<E> {
         E: Executor<Pin<Box<dyn Future<Output = ()> + Send>>>,
     {
         let opts = self.options;
-        if opts.max_pending_requests == 0
-            || opts.max_pending_requests > Semaphore::MAX_PERMITS
-            || opts.max_concurrent_requests == 0
-        {
+        if opts.max_concurrent_requests == 0 {
             return Err(Error::new_h3("invalid HTTP/3 request capacity"));
         }
         #[cfg(feature = "http3-datagram")]
@@ -297,17 +257,13 @@ impl<E> Builder<E> {
         #[cfg(feature = "http3-datagram")]
         let (registry, datagrams) = datagrams.map_or((None, None), |(r, d)| (Some(r), Some(d)));
         let shared = Shared::new(
-            opts.max_pending_requests,
             #[cfg(feature = "http3-datagram")]
             registry,
         );
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (tx, rx) = dispatch::channel();
         Ok((
             SendRequest {
-                tx,
-                readiness: PollSemaphore::new(shared.capacity.clone()),
-                shared: shared.clone(),
-                permit: None,
+                dispatch: tx.unbound(),
             },
             Connection {
                 driver: Box::new(driver),
@@ -335,7 +291,19 @@ impl<Q: quic::Connection<Bytes>, B, E> Connection<Q, B, E> {
     where
         Self: Unpin,
     {
-        self.get_mut().shared.drain();
+        let this = self.get_mut();
+        this.shared.drain();
+        this.cancel_queued();
+    }
+
+    fn cancel_queued(&mut self) {
+        self.rx.close();
+        while let Some((request, callback)) = self.rx.try_recv() {
+            callback.send(Err(TrySendError {
+                error: Error::new_canceled().with("connection closed"),
+                message: Some(request),
+            }));
+        }
     }
 }
 
@@ -364,8 +332,7 @@ where
             let normal = error.is_h3_no_error();
             this.shared.terminate(Error::new_h3(error));
             this.completed = true;
-            this.rx.close();
-            while this.rx.try_recv().is_ok() {}
+            this.cancel_queued();
             return Poll::Ready(if normal {
                 Ok(())
             } else {
@@ -400,8 +367,7 @@ where
                         b"HTTP Datagram driver failed",
                     );
                     this.completed = true;
-                    this.rx.close();
-                    while this.rx.try_recv().is_ok() {}
+                    this.cancel_queued();
                     return Poll::Ready(Err(this.shared.error()));
                 }
                 if let Some(registry) = &this.shared.datagrams {
@@ -413,8 +379,7 @@ where
             this.shared.drain();
         }
         if this.shared.draining.load(Ordering::Acquire) {
-            this.rx.close();
-            while this.rx.try_recv().is_ok() {}
+            this.cancel_queued();
             this.shared.active_waker.register(cx.waker());
             if this.shared.active.load(Ordering::Acquire) == 0 {
                 quic::OpenStreams::close(&mut this.opener, Code::H3_NO_ERROR.value(), b"");
@@ -434,9 +399,8 @@ where
                 }
             }
             match ready!(this.rx.poll_recv(cx)) {
-                Some(mut envelope) => {
-                    envelope.permit = None;
-                    if envelope.cancel.is_cancelled() {
+                Some((request, callback)) => {
+                    if callback.is_canceled() {
                         continue;
                     }
                     this.shared.active.fetch_add(1, Ordering::AcqRel);
@@ -444,7 +408,7 @@ where
                     this.exec.execute(Box::pin(client::exchange(
                         this.sender.clone(),
                         this.stops.clone(),
-                        envelope,
+                        dispatch::Envelope::new(request, callback),
                         active,
                     )));
                 }
@@ -469,22 +433,6 @@ impl<Q: quic::Connection<Bytes>, B, E> Drop for Connection<Q, B, E> {
                 Code::H3_NO_ERROR.value(),
                 b"client driver dropped",
             );
-        }
-    }
-}
-
-// ===== impl CancelOnDrop =====
-
-impl CancelOnDrop {
-    fn disarm(&mut self) {
-        self.0.take();
-    }
-}
-
-impl Drop for CancelOnDrop {
-    fn drop(&mut self) {
-        if let Some(cancel) = self.0.take() {
-            cancel.cancel();
         }
     }
 }

@@ -82,7 +82,7 @@ where
         return Err(Error::new_canceled());
     };
     callback
-        .send(Ok(headers.map(|()| Incoming::empty())))
+        .try_send(Ok(headers.map(|()| Incoming::empty())))
         .map_err(|_| Error::new_canceled())?;
     if let Some(io) = io {
         pending.fulfill(io);

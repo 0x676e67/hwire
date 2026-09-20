@@ -448,7 +448,7 @@ async fn conflicting_host_returns_request_without_closing_connection() {
 }
 
 #[tokio::test]
-async fn queue_capacity_returns_unattempted_request() {
+async fn unbounded_queue_returns_unattempted_requests_on_close() {
     bounded(async {
         let Pair {
             mut tx,
@@ -456,31 +456,44 @@ async fn queue_capacity_returns_unattempted_request() {
             server,
             _endpoints,
             ..
-        } = pair(Http3Options::builder().max_pending_requests(1).build()).await;
+        } = pair(Http3Options::default()).await;
         tx.ready().await.unwrap();
         let mut other = tx.clone();
-        assert!(!other.is_ready());
-        let mut error = other
+        assert!(other.is_ready());
+        let mut pending = Vec::new();
+        // Exceed the former queue limit without polling the driver. Cloned
+        // senders remain ready and every unsent request must be recoverable.
+        for index in 0..64 {
+            let sender = if index % 2 == 0 { &mut tx } else { &mut other };
+            sender.ready().await.unwrap();
+            pending.push(
+                sender.try_send_request(
+                    Request::get(format!("https://localhost/queued/{index}"))
+                        .body(Full::new(Bytes::new()))
+                        .unwrap(),
+                ),
+            );
+        }
+        drop(tx);
+        assert!(other.is_ready());
+        drop(driver);
+        for (index, request) in pending.into_iter().enumerate() {
+            let request = request.await.unwrap_err().take_message().unwrap();
+            assert_eq!(request.uri().path(), format!("/queued/{index}"));
+        }
+        assert!(other.is_closed());
+        assert!(other.ready().await.is_err());
+        let request = other
             .try_send_request(
-                Request::get("https://localhost/retry")
+                Request::get("https://localhost/after-close")
                     .body(Full::new(Bytes::new()))
                     .unwrap(),
             )
             .await
-            .unwrap_err();
-        let request = error.take_message();
-        assert_eq!(request.unwrap().uri().path(), "/retry");
-        drop(tx);
-        assert!(other.is_ready());
-        let pending = other.try_send_request(
-            Request::get("https://localhost/queued")
-                .body(Full::new(Bytes::new()))
-                .unwrap(),
-        );
-        drop(driver);
-        let request = pending.await.unwrap_err().take_message();
-        assert_eq!(request.unwrap().uri().path(), "/queued");
-        assert!(other.is_closed());
+            .unwrap_err()
+            .take_message()
+            .unwrap();
+        assert_eq!(request.uri().path(), "/after-close");
         drop(server);
     })
     .await;
@@ -1319,40 +1332,39 @@ async fn dropped_unpolled_response_after_fin_cancels_pending_upload() {
 #[tokio::test]
 async fn canceled_request_waiting_for_quic_credit_releases_active_slot() {
     bounded(async {
-        let Pair {
-            mut tx,
-            driver,
-            mut server,
-            server_quic,
-            _endpoints,
-        } = pair_config::<ClientBody, _>(
-            Http3Options::builder()
-                .max_pending_requests(1)
-                .max_concurrent_requests(1)
-                .build(),
-            Exec,
-            false,
-            false,
-            false,
-            Some(0),
-        )
-        .await;
+        let (_, mut server_config, client_config) = tls::config();
+        let mut transport = quinn::TransportConfig::default();
+        transport.max_concurrent_bidi_streams(0_u32.into());
+        server_config.transport_config(std::sync::Arc::new(transport));
+        let (client, server, _endpoints) = quic_pair(server_config, client_config).await;
+        let server_quic = server.clone();
+        let pause = pause::Pause::default();
+        pause.resume();
+        let (mut tx, driver) = Builder::new(Exec)
+            .options(Http3Options::builder().max_concurrent_requests(1).build())
+            .handshake::<_, ClientBody>(pause.wrap(crate::native::Connection::new(client)))
+            .await
+            .unwrap();
+        let mut server = h3::server::builder()
+            .build::<_, Bytes>(h3_quinn::Connection::new(server))
+            .await
+            .unwrap();
         let client_driver = tokio::spawn(driver);
         let canceled = tx.try_send_request(
             Request::get("https://localhost/canceled")
                 .body(Full::new(Bytes::new()))
                 .unwrap(),
         );
-        // The queue permit is released only once the first exchange has entered
-        // the active set. No bidirectional stream can exist with zero credit.
-        tx.ready().await.unwrap();
+        // Observe the actual open attempt: readiness no longer reserves a slot
+        // or implies that the queued request has entered the active set.
+        pause.waiting_for_credit().await;
         drop(canceled);
         let response = tx.try_send_request(
             Request::get("https://localhost/survivor")
                 .body(Full::new(Bytes::new()))
                 .unwrap(),
         );
-        tx.ready().await.unwrap();
+        pause.waiting_for_credit().await;
         server_quic.set_max_concurrent_bi_streams(1_u32.into());
         let server_task = tokio::spawn(async move {
             let resolver = server.accept().await.unwrap().unwrap();
@@ -1393,7 +1405,6 @@ async fn goaway_wakes_requests_waiting_for_stream_credit() {
         let (client, server, _endpoints) = quic_pair(server_config, client_config).await;
         let pause = pause::Pause::default();
         let (mut tx, driver) = Builder::new(Exec)
-            .options(Http3Options::builder().max_pending_requests(1).build())
             .handshake::<_, ClientBody>(pause.wrap(crate::native::Connection::new(client)))
             .await
             .unwrap();
@@ -1415,7 +1426,7 @@ async fn goaway_wakes_requests_waiting_for_stream_credit() {
         }
         tx.ready().await.unwrap();
         let mut observer = tx.clone();
-        assert!(!observer.is_ready());
+        assert!(observer.is_ready());
         server.shutdown(0).await.unwrap();
         let server_task = tokio::spawn(async move {
             match server.accept().await {
@@ -1424,7 +1435,6 @@ async fn goaway_wakes_requests_waiting_for_stream_credit() {
                 _ => panic!("a request was opened after GOAWAY"),
             }
         });
-        assert!(observer.ready().await.is_err());
         // The peer grants no new credit and keeps the connection open. Only
         // GOAWAY may release this request; an idle timeout is not the result.
         for request in requests {
@@ -1432,6 +1442,7 @@ async fn goaway_wakes_requests_waiting_for_stream_credit() {
             assert!(!error.error().is_timeout());
         }
         client_driver.await.unwrap().unwrap();
+        assert!(observer.ready().await.is_err());
         server_task.await.unwrap();
     })
     .await;
@@ -1446,8 +1457,23 @@ async fn goaway_rejects_new_requests_but_drains_existing_response() {
             mut server,
             _endpoints,
             ..
-        } = pair(Http3Options::builder().max_pending_requests(1).build()).await;
-        let client_driver = tokio::spawn(driver);
+        } = pair(Http3Options::default()).await;
+        let observer = tx.clone();
+        let (draining, drained) = oneshot::channel();
+        let client_driver = tokio::spawn(async move {
+            let mut driver = Box::pin(driver);
+            let mut draining = Some(draining);
+            std::future::poll_fn(|cx| {
+                let result = driver.as_mut().poll(cx);
+                if observer.is_closed() {
+                    if let Some(draining) = draining.take() {
+                        draining.send(()).unwrap();
+                    }
+                }
+                result
+            })
+            .await
+        });
         let (goaway, requested) = oneshot::channel();
         let (finish, permitted) = oneshot::channel();
         let server_task = tokio::spawn(async move {
@@ -1489,8 +1515,9 @@ async fn goaway_rejects_new_requests_but_drains_existing_response() {
             .unwrap();
         tx.ready().await.unwrap();
         let mut blocked = tx.clone();
-        assert!(!blocked.is_ready());
+        assert!(blocked.is_ready());
         goaway.send(()).unwrap();
+        drained.await.unwrap();
         assert!(blocked.ready().await.is_err());
         assert!(tx.is_closed());
         let rejected = tx

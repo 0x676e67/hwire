@@ -18,10 +18,10 @@ use http3::{
 };
 use http_body::Body;
 
-use super::dispatch::{Active, Callback, Envelope, Shared};
+use super::dispatch::{Active, Callback, Shared};
 use crate::{
     body::{Incoming, Sender},
-    dispatch::TrySendError,
+    dispatch::{Envelope, TrySendError},
     error::BoxError,
     Error, Result,
 };
@@ -62,7 +62,7 @@ pub(super) struct RecvGuard<S: quic::RecvStream> {
 pub(crate) async fn exchange<O, B>(
     mut sender: SendRequest<O, Bytes>,
     stops: super::transport::Stops,
-    mut envelope: Envelope<B>,
+    envelope: Envelope<Request<B>, Response<Incoming>>,
     active: Active,
 ) where
     O: quic::OpenStreams<Bytes>,
@@ -70,25 +70,23 @@ pub(crate) async fn exchange<O, B>(
     B: Body,
     B::Error: Into<BoxError>,
 {
+    let (mut request, mut callback) = envelope.into_parts();
     let shared = active.0.clone();
     let failure = Arc::new(Failure {
         error: OnceLock::new(),
         connection: shared.clone(),
     });
+    let cancel = callback.take_cancellation();
     let mut response = ResponseGuard {
-        callback: envelope.callback.take(),
+        callback: Some(callback),
         failure: failure.clone(),
     };
-    let cancel = envelope.cancel.clone();
     #[cfg(feature = "http3-datagram")]
     let datagram_cancellation = shared
         .datagrams
         .as_ref()
         .map(|registry| (registry, tokio_util::sync::CancellationToken::new()));
     let work = async {
-        let Some(mut request) = envelope.request.take() else {
-            return Err(Error::new_canceled());
-        };
         let connect = request.method() == Method::CONNECT;
         #[cfg(feature = "http3-datagram")]
         let datagram_request = request
@@ -102,7 +100,7 @@ pub(crate) async fn exchange<O, B>(
                 || request.extensions().get::<http3::ext::Protocol>().is_none())
         {
             if let Some(callback) = response.callback.take() {
-                let _ = callback.send(Err(TrySendError {
+                callback.send(Err(TrySendError {
                     error: Error::new_user_invalid_request("Datagram requests require an Extended CONNECT and a Datagram-enabled connection"),
                     message: Some(request),
                 }));
@@ -111,7 +109,7 @@ pub(crate) async fn exchange<O, B>(
         }
         if connect && !request.body().is_end_stream() {
             if let Some(callback) = response.callback.take() {
-                let _ = callback.send(Err(TrySendError {
+                callback.send(Err(TrySendError {
                     error: Error::new_user_invalid_connect(),
                     message: Some(request),
                 }));
@@ -120,7 +118,7 @@ pub(crate) async fn exchange<O, B>(
         }
         if let Err(error) = validate_request(&request) {
             if let Some(callback) = response.callback.take() {
-                let _ = callback.send(Err(TrySendError {
+                callback.send(Err(TrySendError {
                     error: Error::new_user_invalid_request(error),
                     message: Some(request),
                 }));
@@ -135,7 +133,7 @@ pub(crate) async fn exchange<O, B>(
                 .is_some_and(|enabled| *enabled)
             {
                 if let Some(callback) = response.callback.take() {
-                    let _ = callback.send(Err(TrySendError {
+                    callback.send(Err(TrySendError {
                         error: Error::new_user_invalid_request(
                             "peer did not enable Extended CONNECT",
                         ),
@@ -239,7 +237,16 @@ pub(crate) async fn exchange<O, B>(
     };
     let stop = async {
         let connection = pin!(shared.closed.cancelled());
-        let request = pin!(cancel.cancelled());
+        let request = pin!(async {
+            if let Some(cancel) = cancel {
+                if cancel.await.is_err() {
+                    return;
+                }
+            }
+            // Successful response handoff disarms future-drop cancellation.
+            // Body and tunnel ownership now govern the remaining exchange.
+            std::future::pending::<()>().await;
+        });
         let canceled = select(connection, request);
         #[cfg(feature = "http3-datagram")]
         {
@@ -276,7 +283,7 @@ pub(crate) async fn exchange<O, B>(
     if let Err(error) = result {
         failure.set(error);
     }
-    // ResponseGuard also covers executors that discard the task without polling.
+    // Envelope returns unstarted requests; ResponseGuard covers started tasks.
     drop(response);
     drop(active);
 }
@@ -421,7 +428,7 @@ async fn download<S: quic::RecvStream, B>(
         return Err(Error::new_canceled());
     };
     callback
-        .send(Ok(headers.map(|()| incoming)))
+        .try_send(Ok(headers.map(|()| incoming)))
         .map_err(|_| Error::new_canceled())?;
     let Some(sender) = body.sender.as_mut() else {
         return Err(Error::new_canceled());
@@ -605,7 +612,7 @@ impl Failure {
 impl<B> Drop for ResponseGuard<B> {
     fn drop(&mut self) {
         if let Some(callback) = self.callback.take() {
-            let _ = callback.send(Err(TrySendError {
+            callback.send(Err(TrySendError {
                 error: self.failure.get(),
                 message: None,
             }));

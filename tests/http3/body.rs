@@ -10,13 +10,7 @@ async fn graceful_shutdown_returns_queued_requests_and_honors_external_deadline(
                 mut server,
                 _endpoints,
                 ..
-            } = pair(
-                Http3Options::builder()
-                    .max_concurrent_requests(1)
-                    .max_pending_requests(1)
-                    .build(),
-            )
-            .await;
+            } = pair(Http3Options::builder().max_concurrent_requests(1).build()).await;
             let (shutdown, requested) = oneshot::channel();
             let (draining, started) = oneshot::channel();
             let client = tokio::spawn(async move {
@@ -89,7 +83,10 @@ async fn graceful_shutdown_returns_queued_requests_and_honors_external_deadline(
             );
             let mut blocked = tx.clone();
             futures_util::future::poll_fn(|cx| {
-                assert!(blocked.poll_ready(cx).is_pending());
+                assert!(matches!(
+                    blocked.poll_ready(cx),
+                    std::task::Poll::Ready(Ok(()))
+                ));
                 std::task::Poll::Ready(())
             })
             .await;

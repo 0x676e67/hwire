@@ -34,7 +34,6 @@ async fn canceled_openers_do_not_strand_other_credit_waiters() {
         pause.resume();
         let (completed, mut completions) = mpsc::unbounded_channel();
         let (mut tx, driver) = Builder::new(CompletionExec(completed))
-            .options(Http3Options::builder().max_pending_requests(1).build())
             .handshake::<_, ClientBody>(pause.wrap(crate::native::Connection::new(client)))
             .await
             .unwrap();

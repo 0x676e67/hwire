@@ -24,10 +24,6 @@ pub struct Http3OptionsBuilder {
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Http3Options {
-    /// Maximum number of queued requests, including reserved readiness slots.
-    /// Defaults to 32; zero or values above the semaphore capacity fail the handshake.
-    pub max_pending_requests: usize,
-
     /// Maximum number of active requests, including requests waiting for QUIC stream credit.
     /// Defaults to 128; zero fails the handshake. This is a local admission limit.
     pub max_concurrent_requests: usize,
@@ -74,7 +70,6 @@ impl Default for Http3Options {
     #[inline]
     fn default() -> Self {
         Self {
-            max_pending_requests: 32,
             max_concurrent_requests: 128,
             max_field_section_size: 64 * 1024,
             max_qpack_decode_buffer_size: 256 * 1024,
@@ -101,14 +96,6 @@ impl Http3Options {
 // ===== impl Http3OptionsBuilder =====
 
 impl Http3OptionsBuilder {
-    /// Sets the number of queued requests, including reserved readiness slots.
-    /// Zero and values exceeding the semaphore capacity fail the handshake.
-    #[inline]
-    pub fn max_pending_requests(mut self, value: usize) -> Self {
-        self.opts.max_pending_requests = value;
-        self
-    }
-
     /// Sets the active request limit, including requests waiting for QUIC credit.
     /// Zero fails the handshake.
     #[inline]

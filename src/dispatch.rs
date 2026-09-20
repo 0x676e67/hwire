@@ -90,7 +90,7 @@ impl<T, U> Sender<T, U> {
 
         let (tx, rx) = oneshot::channel();
         self.inner
-            .send(Envelope(Some((val, Callback(Some(tx))))))
+            .send(Envelope(Some((val, Callback::new(tx)))))
             .map(move |_| rx)
             .map_err(|mut e| (e.0).0.take().expect("envelope not dropped").0)
     }
@@ -118,8 +118,25 @@ impl<T, U> UnboundedSender<T, U> {
     pub(crate) fn try_send(&mut self, val: T) -> Result<RetryPromise<T, U>, T> {
         let (tx, rx) = oneshot::channel();
         self.inner
-            .send(Envelope(Some((val, Callback(Some(tx))))))
+            .send(Envelope(Some((val, Callback::new(tx)))))
             .map(move |_| rx)
+            .map_err(|mut e| (e.0).0.take().expect("envelope not dropped").0)
+    }
+
+    /// Keeps cancellation observable until the caller consumes the response.
+    /// Sending `()` disarms cancellation; dropping the sender cancels the request.
+    #[cfg(feature = "http3")]
+    pub(crate) fn try_send_cancelable(
+        &mut self,
+        val: T,
+    ) -> Result<(RetryPromise<T, U>, oneshot::Sender<()>), T> {
+        let (tx, rx) = oneshot::channel();
+        let (consumed, canceled) = oneshot::channel();
+        let mut callback = Callback::new(tx);
+        callback.canceled = Some(canceled);
+        self.inner
+            .send(Envelope(Some((val, callback))))
+            .map(move |_| (rx, consumed))
             .map_err(|mut e| (e.0).0.take().expect("envelope not dropped").0)
     }
 }
@@ -140,6 +157,11 @@ pub(crate) struct Receiver<T, U> {
 }
 
 impl<T, U> Receiver<T, U> {
+    #[cfg(feature = "http3")]
+    pub(crate) fn is_closed(&self) -> bool {
+        self.inner.is_closed()
+    }
+
     pub(crate) fn poll_recv(&mut self, cx: &mut Context<'_>) -> Poll<Option<(T, Callback<T, U>)>> {
         match self.inner.poll_recv(cx) {
             Poll::Ready(item) => {
@@ -177,7 +199,18 @@ impl<T, U> Drop for Receiver<T, U> {
     }
 }
 
-struct Envelope<T, U>(Option<(T, Callback<T, U>)>);
+pub(crate) struct Envelope<T, U>(Option<(T, Callback<T, U>)>);
+
+#[cfg(feature = "http3")]
+impl<T, U> Envelope<T, U> {
+    pub(crate) fn new(value: T, callback: Callback<T, U>) -> Self {
+        Self(Some((value, callback)))
+    }
+
+    pub(crate) fn into_parts(mut self) -> (T, Callback<T, U>) {
+        self.0.take().expect("envelope not dropped")
+    }
+}
 
 impl<T, U> Drop for Envelope<T, U> {
     fn drop(&mut self) {
@@ -190,11 +223,15 @@ impl<T, U> Drop for Envelope<T, U> {
     }
 }
 
-pub(crate) struct Callback<T, U>(Option<oneshot::Sender<Result<U, TrySendError<T>>>>);
+pub(crate) struct Callback<T, U> {
+    tx: Option<oneshot::Sender<Result<U, TrySendError<T>>>>,
+    #[cfg(feature = "http3")]
+    canceled: Option<oneshot::Receiver<()>>,
+}
 
 impl<T, U> Drop for Callback<T, U> {
     fn drop(&mut self) {
-        if let Some(tx) = self.0.take() {
+        if let Some(tx) = self.tx.take() {
             let _ = tx.send(Err(TrySendError {
                 error: dispatch_gone(),
                 message: None,
@@ -216,19 +253,43 @@ fn dispatch_gone() -> Error {
 impl<T, U> Callback<T, U> {
     const MISSING_SENDER: &'static str = "callback sender missing";
 
+    fn new(tx: oneshot::Sender<Result<U, TrySendError<T>>>) -> Self {
+        Self {
+            tx: Some(tx),
+            #[cfg(feature = "http3")]
+            canceled: None,
+        }
+    }
+
+    #[cfg(feature = "http3")]
+    pub(crate) fn take_cancellation(&mut self) -> Option<oneshot::Receiver<()>> {
+        self.canceled.take()
+    }
+
     #[inline]
     pub(crate) fn is_canceled(&self) -> bool {
-        self.0.as_ref().expect(Self::MISSING_SENDER).is_closed()
+        self.tx.as_ref().expect(Self::MISSING_SENDER).is_closed()
     }
 
     #[inline]
     pub(crate) fn poll_canceled(&mut self, cx: &mut Context<'_>) -> Poll<()> {
-        self.0.as_mut().expect(Self::MISSING_SENDER).poll_closed(cx)
+        self.tx
+            .as_mut()
+            .expect(Self::MISSING_SENDER)
+            .poll_closed(cx)
     }
 
     #[inline]
     pub(crate) fn send(mut self, val: Result<U, TrySendError<T>>) {
-        let _ = self.0.take().expect(Self::MISSING_SENDER).send(val);
+        let _ = self.tx.take().expect(Self::MISSING_SENDER).send(val);
+    }
+
+    #[cfg(feature = "http3")]
+    pub(crate) fn try_send(
+        mut self,
+        val: Result<U, TrySendError<T>>,
+    ) -> Result<(), Result<U, TrySendError<T>>> {
+        self.tx.take().expect(Self::MISSING_SENDER).send(val)
     }
 }
 
