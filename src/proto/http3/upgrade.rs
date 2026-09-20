@@ -128,7 +128,14 @@ async fn upload<S: quic::SendStream<Bytes>>(
                 send.stream.finish().await.map_err(Error::new_h3)?;
                 send.finished = true;
                 let _ = ack.send(Ok(()));
-                return Ok(());
+                // Acknowledge the local shutdown immediately, but keep drain
+                // waiting until QUIC confirms FIN or the peer stops receiving.
+                return send
+                    .stopped
+                    .as_mut()
+                    .await
+                    .map(|_| ())
+                    .map_err(Error::new_h3);
             }
         }
         cooperate(&mut budget).await;

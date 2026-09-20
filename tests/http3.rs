@@ -13,6 +13,8 @@ mod datagram;
 #[cfg(feature = "http3-datagram")]
 #[path = "http3/datagram_close.rs"]
 mod datagram_close;
+#[path = "http3/finish.rs"]
+mod finish;
 #[path = "http3/goaway.rs"]
 mod goaway;
 #[path = "http3/headers.rs"]

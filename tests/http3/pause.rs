@@ -26,6 +26,9 @@ struct State {
     credit: Notify,
     received_fin: Notify,
     writer: AtomicWaker,
+    hold_finish_ack: AtomicBool,
+    waiting_for_ack: Notify,
+    release_ack: Notify,
 }
 
 #[derive(Clone)]
@@ -75,6 +78,19 @@ impl Pause {
     pub fn resume(&self) {
         self.0.resumed.store(true, Ordering::Release);
         self.0.writer.wake();
+    }
+
+    pub fn hold_finish_ack(&self) {
+        self.resume();
+        self.0.hold_finish_ack.store(true, Ordering::Release);
+    }
+
+    pub async fn waiting_for_finish_ack(&self) {
+        self.0.waiting_for_ack.notified().await;
+    }
+
+    pub fn release_finish_ack(&self) {
+        self.0.release_ack.notify_one();
     }
 }
 
@@ -167,8 +183,15 @@ impl<T: SendStream<Bytes>> SendStream<Bytes> for Transport<T> {
         self.pause.0.observers.fetch_add(1, Ordering::AcqRel);
         let observer = Observer(self.pause.clone());
         async move {
-            let _observer = observer;
-            stopped.await
+            let observer = observer;
+            let result = stopped.await;
+            if matches!(result, Ok(None)) && observer.0 .0.hold_finish_ack.load(Ordering::Acquire) {
+                // Model an acknowledged FIN whose completion is not yet
+                // visible to the client, without delaying peer stream reads.
+                observer.0 .0.waiting_for_ack.notify_one();
+                observer.0 .0.release_ack.notified().await;
+            }
+            result
         }
     }
 

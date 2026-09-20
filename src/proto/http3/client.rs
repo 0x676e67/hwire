@@ -360,7 +360,13 @@ where
     if let Some(datagrams) = &send.datagrams {
         datagrams.close_send();
     }
-    Ok(())
+    // FIN is only queued by finish(). Keep the exchange active until transport
+    // delivery or peer cancellation, so connection drain cannot discard it.
+    send.stopped
+        .as_mut()
+        .await
+        .map(|_| ())
+        .map_err(Error::new_h3)
 }
 
 async fn response_headers<S: quic::RecvStream>(recv: &mut RecvGuard<S>) -> Result<Response<()>> {

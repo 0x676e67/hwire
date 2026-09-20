@@ -288,6 +288,7 @@ impl<E> Builder<E> {
 
 impl<Q: quic::Connection<Bytes>, B, E> Connection<Q, B, E> {
     /// Stops admitting requests and waits for existing exchanges to finish.
+    /// Accepted upload bytes and FIN must be acknowledged or stopped by the peer.
     /// This only initiates shutdown. Continue polling; apply a deadline outside.
     pub fn graceful_shutdown(self: Pin<&mut Self>)
     where
