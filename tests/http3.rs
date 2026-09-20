@@ -21,8 +21,6 @@ mod goaway;
 mod headers;
 #[path = "http3/pause.rs"]
 mod pause;
-#[path = "http3/request_drop.rs"]
-mod request_drop;
 #[path = "http3/soak.rs"]
 mod soak;
 #[path = "http3/tls.rs"]
