@@ -120,7 +120,6 @@ required-features = ["http3"]
 
 [workspace]
 resolver = "3"
-exclude = [".agents/worktrees/http3", ".agents/worktrees/http3/*", ".agents/worktrees/vproxy"]
 
 [profile.release]
 codegen-units = 1
