@@ -100,6 +100,8 @@ impl<B> SendRequest<B> {
     /// Queues a request, returning it on failures before dispatch starts.
     /// Dropping the returned future cancels only this request. Keep driving the
     /// connection and executor to deliver QUIC reset/stop signals to the peer.
+    /// After response handoff, dropping its body stops receiving while an
+    /// unfinished upload can continue.
     #[allow(clippy::result_large_err)]
     pub fn try_send_request(
         &mut self,

@@ -1,6 +1,74 @@
 use super::*;
 
 #[tokio::test]
+async fn dropping_response_body_preserves_pending_upload() {
+    bounded(async {
+        let (upload, ready) = oneshot::channel();
+        let body = http_body_util::StreamBody::new(futures_util::stream::once(async move {
+            ready.await.unwrap();
+            Ok::<_, std::convert::Infallible>(http_body::Frame::data(Bytes::from_static(b"upload")))
+        }));
+        let Pair {
+            mut tx,
+            driver,
+            mut server,
+            _endpoints,
+            ..
+        } = pair_with(Http3Options::default(), Exec).await;
+        let drive = tokio::spawn(driver);
+        let (dropped, body_dropped) = oneshot::channel();
+        let (stopped, receive_stopped) = oneshot::channel();
+        let (finished, upload_received) = oneshot::channel();
+        let peer = tokio::spawn(async move {
+            let resolver = server.accept().await.unwrap().unwrap();
+            let request = tokio::spawn(async move {
+                let (_, stream) = resolver.resolve_request().await.unwrap();
+                let (mut send, mut recv) = stream.split();
+                send.send_response(Response::new(())).await.unwrap();
+                body_dropped.await.unwrap();
+                loop {
+                    if let Err(error) = send.send_data(Bytes::from(vec![1; 64 * 1024])).await {
+                        assert!(matches!(error,
+                            h3::error::StreamError::RemoteTerminate { code, .. }
+                                if code == h3::error::Code::H3_REQUEST_CANCELLED));
+                        break;
+                    }
+                }
+                stopped.send(()).unwrap();
+                let mut received = BytesMut::new();
+                while let Some(mut data) = recv.recv_data().await.unwrap() {
+                    received.extend_from_slice(&data.copy_to_bytes(data.remaining()));
+                }
+                assert_eq!(received, "upload");
+                assert!(recv.recv_trailers().await.unwrap().is_none());
+                finished.send(()).unwrap();
+            });
+            let _ = server.accept().await;
+            request.await.unwrap();
+        });
+        let response = tx
+            .try_send_request(
+                Request::post("https://localhost/independent-directions")
+                    .body(body)
+                    .unwrap(),
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{}", error.error()));
+        drop(response);
+        dropped.send(()).unwrap();
+        // Observe STOP_SENDING before resuming the upload, so an implementation
+        // that cancels both halves cannot accidentally finish sending first.
+        receive_stopped.await.unwrap();
+        upload.send(()).expect("response drop must preserve upload");
+        upload_received.await.unwrap();
+        drop(tx);
+        drive.await.unwrap().unwrap();
+        peer.await.unwrap();
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn graceful_shutdown_returns_queued_requests_and_honors_external_deadline() {
     for expire in [false, true] {
         bounded(async {

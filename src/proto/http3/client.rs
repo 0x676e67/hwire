@@ -436,7 +436,7 @@ async fn download<S: quic::RecvStream, B>(
     let transfer = async {
         while let Some(mut data) = poll_fn(|cx| {
             if sender.poll_closed(cx).is_ready() {
-                return Poll::Ready(Err(Error::new_canceled()));
+                return Poll::Ready(Err(Error::new_closed()));
             }
             recv.stream.poll_recv_data(cx).map_err(Error::new_h3)
         })
@@ -451,7 +451,7 @@ async fn download<S: quic::RecvStream, B>(
                 let size = data.remaining().min(CHUNK);
                 sender
                     .send_data(data.copy_to_bytes(size))
-                    .map_err(|_| Error::new_canceled())?;
+                    .map_err(|_| Error::new_closed())?;
                 cooperate(&mut budget).await;
             }
             cooperate(&mut budget).await;
@@ -462,7 +462,7 @@ async fn download<S: quic::RecvStream, B>(
         }
         if let Some(trailers) = poll_fn(|cx| {
             if sender.poll_closed(cx).is_ready() {
-                return Poll::Ready(Err(Error::new_canceled()));
+                return Poll::Ready(Err(Error::new_closed()));
             }
             recv.stream.poll_recv_trailers(cx).map_err(Error::new_h3)
         })
@@ -470,7 +470,7 @@ async fn download<S: quic::RecvStream, B>(
         {
             sender
                 .send_trailers(trailers)
-                .map_err(|_| Error::new_canceled())?;
+                .map_err(|_| Error::new_closed())?;
         }
         recv.finished = true;
         #[cfg(feature = "http3-datagram")]
@@ -479,10 +479,14 @@ async fn download<S: quic::RecvStream, B>(
         }
         Ok(())
     };
-    let result = transfer.await;
-    if let Err(error) = result {
-        body.failure.set(error);
-        return Err(body.failure.get());
+    match transfer.await {
+        Err(error) if !error.is_closed() => {
+            body.failure.set(error);
+            return Err(body.failure.get());
+        }
+        // Body drop only abandons receiving; request-future cancellation
+        // separately stops both directions before response handoff.
+        _ => {}
     }
     body.sender.take();
     Ok(())
