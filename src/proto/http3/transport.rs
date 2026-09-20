@@ -1,7 +1,7 @@
 use std::task::{ready, Context, Poll};
 
 use bytes::Buf;
-use http3::quic::{self as h3, WriteBuf};
+use http3::quic::WriteBuf;
 
 use crate::rt::quic;
 
@@ -13,21 +13,21 @@ pub(crate) struct Stream<T, B> {
     pending: Option<WriteBuf<B>>,
 }
 
-fn closed() -> h3::ConnectionErrorIncoming {
-    h3::ConnectionErrorIncoming::ApplicationClose {
+fn closed() -> http3::quic::ConnectionErrorIncoming {
+    http3::quic::ConnectionErrorIncoming::ApplicationClose {
         error_code: http3::error::Code::H3_NO_ERROR.value(),
     }
 }
 
-fn contract_error(reason: &str) -> h3::StreamErrorIncoming {
-    h3::StreamErrorIncoming::ConnectionErrorIncoming {
-        connection_error: h3::ConnectionErrorIncoming::InternalError(reason.into()),
+fn contract_error(reason: &str) -> http3::quic::StreamErrorIncoming {
+    http3::quic::StreamErrorIncoming::ConnectionErrorIncoming {
+        connection_error: http3::quic::ConnectionErrorIncoming::InternalError(reason.into()),
     }
 }
 
 // ===== impl Transport =====
 
-impl<B: Buf, Q: quic::Connection<B>> h3::Connection<B> for Transport<Q> {
+impl<B: Buf, Q: quic::Connection<B>> http3::quic::Connection<B> for Transport<Q> {
     type RecvStream = Stream<Q::RecvStream, B>;
 
     type OpenStreams = Transport<Q::OpenStreams>;
@@ -35,7 +35,7 @@ impl<B: Buf, Q: quic::Connection<B>> h3::Connection<B> for Transport<Q> {
     fn poll_accept_recv(
         &mut self,
         cx: &mut Context<'_>,
-    ) -> Poll<Result<Self::RecvStream, h3::ConnectionErrorIncoming>> {
+    ) -> Poll<Result<Self::RecvStream, http3::quic::ConnectionErrorIncoming>> {
         self.0
             .poll_accept_recv(cx)
             .map(|res| res.and_then(|stream| stream.map(Stream::new).ok_or_else(closed)))
@@ -44,7 +44,7 @@ impl<B: Buf, Q: quic::Connection<B>> h3::Connection<B> for Transport<Q> {
     fn poll_accept_bidi(
         &mut self,
         cx: &mut Context<'_>,
-    ) -> Poll<Result<Self::BidiStream, h3::ConnectionErrorIncoming>> {
+    ) -> Poll<Result<Self::BidiStream, http3::quic::ConnectionErrorIncoming>> {
         self.0
             .poll_accept_bidi(cx)
             .map(|res| res.and_then(|stream| stream.map(Stream::new).ok_or_else(closed)))
@@ -55,7 +55,7 @@ impl<B: Buf, Q: quic::Connection<B>> h3::Connection<B> for Transport<Q> {
     }
 }
 
-impl<B: Buf, Q: quic::OpenStreams<B>> h3::OpenStreams<B> for Transport<Q> {
+impl<B: Buf, Q: quic::OpenStreams<B>> http3::quic::OpenStreams<B> for Transport<Q> {
     type SendStream = Stream<Q::SendStream, B>;
 
     type BidiStream = Stream<Q::BidiStream, B>;
@@ -63,14 +63,14 @@ impl<B: Buf, Q: quic::OpenStreams<B>> h3::OpenStreams<B> for Transport<Q> {
     fn poll_open_bidi(
         &mut self,
         cx: &mut Context<'_>,
-    ) -> Poll<Result<Self::BidiStream, h3::StreamErrorIncoming>> {
+    ) -> Poll<Result<Self::BidiStream, http3::quic::StreamErrorIncoming>> {
         self.0.poll_open_bidi(cx).map_ok(Stream::new)
     }
 
     fn poll_open_send(
         &mut self,
         cx: &mut Context<'_>,
-    ) -> Poll<Result<Self::SendStream, h3::StreamErrorIncoming>> {
+    ) -> Poll<Result<Self::SendStream, http3::quic::StreamErrorIncoming>> {
         self.0.poll_open_send(cx).map_ok(Stream::new)
     }
 
@@ -90,8 +90,11 @@ impl<T, B> Stream<T, B> {
     }
 }
 
-impl<T: quic::SendStream<B>, B: Buf> h3::SendStream<B> for Stream<T, B> {
-    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), h3::StreamErrorIncoming>> {
+impl<T: quic::SendStream<B>, B: Buf> http3::quic::SendStream<B> for Stream<T, B> {
+    fn poll_ready(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<(), http3::quic::StreamErrorIncoming>> {
         if let Some(buf) = self.pending.as_mut() {
             let mut budget = 0;
             while buf.has_remaining() {
@@ -113,7 +116,10 @@ impl<T: quic::SendStream<B>, B: Buf> h3::SendStream<B> for Stream<T, B> {
         Poll::Ready(Ok(()))
     }
 
-    fn send_data<D: Into<WriteBuf<B>>>(&mut self, data: D) -> Result<(), h3::StreamErrorIncoming> {
+    fn send_data<D: Into<WriteBuf<B>>>(
+        &mut self,
+        data: D,
+    ) -> Result<(), http3::quic::StreamErrorIncoming> {
         if self.pending.is_some() {
             return Err(contract_error("send_data called without QUIC readiness"));
         }
@@ -121,15 +127,18 @@ impl<T: quic::SendStream<B>, B: Buf> h3::SendStream<B> for Stream<T, B> {
         Ok(())
     }
 
-    fn poll_finish(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), h3::StreamErrorIncoming>> {
-        ready!(h3::SendStream::poll_ready(self, cx))?;
+    fn poll_finish(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<(), http3::quic::StreamErrorIncoming>> {
+        ready!(http3::quic::SendStream::poll_ready(self, cx))?;
         self.inner.poll_finish(cx)
     }
 
     fn poll_stopped(
         &mut self,
         cx: &mut Context<'_>,
-    ) -> Poll<Result<Option<u64>, h3::StreamErrorIncoming>> {
+    ) -> Poll<Result<Option<u64>, http3::quic::StreamErrorIncoming>> {
         self.inner.poll_stopped(cx)
     }
 
@@ -138,29 +147,29 @@ impl<T: quic::SendStream<B>, B: Buf> h3::SendStream<B> for Stream<T, B> {
         self.inner.reset(code);
     }
 
-    fn send_id(&self) -> h3::StreamId {
+    fn send_id(&self) -> http3::quic::StreamId {
         self.inner.send_id()
     }
 }
 
-impl<T: quic::SendStream<B>, B: Buf> h3::SendStreamUnframed<B> for Stream<T, B> {
+impl<T: quic::SendStream<B>, B: Buf> http3::quic::SendStreamUnframed<B> for Stream<T, B> {
     fn poll_send<D: Buf>(
         &mut self,
         cx: &mut Context<'_>,
         buf: &mut D,
-    ) -> Poll<Result<usize, h3::StreamErrorIncoming>> {
-        ready!(h3::SendStream::poll_ready(self, cx))?;
+    ) -> Poll<Result<usize, http3::quic::StreamErrorIncoming>> {
+        ready!(http3::quic::SendStream::poll_ready(self, cx))?;
         self.inner.poll_send(cx, buf)
     }
 }
 
-impl<T: quic::RecvStream, B: Buf> h3::RecvStream for Stream<T, B> {
+impl<T: quic::RecvStream, B: Buf> http3::quic::RecvStream for Stream<T, B> {
     type Buf = T::Buf;
 
     fn poll_data(
         &mut self,
         cx: &mut Context<'_>,
-    ) -> Poll<Result<Option<Self::Buf>, h3::StreamErrorIncoming>> {
+    ) -> Poll<Result<Option<Self::Buf>, http3::quic::StreamErrorIncoming>> {
         self.inner.poll_data(cx)
     }
 
@@ -168,12 +177,12 @@ impl<T: quic::RecvStream, B: Buf> h3::RecvStream for Stream<T, B> {
         self.inner.stop_sending(code);
     }
 
-    fn recv_id(&self) -> h3::StreamId {
+    fn recv_id(&self) -> http3::quic::StreamId {
         self.inner.recv_id()
     }
 }
 
-impl<T: quic::BidiStream<B>, B: Buf> h3::BidiStream<B> for Stream<T, B> {
+impl<T: quic::BidiStream<B>, B: Buf> http3::quic::BidiStream<B> for Stream<T, B> {
     type SendStream = Stream<T::SendStream, B>;
 
     type RecvStream = Stream<T::RecvStream, B>;

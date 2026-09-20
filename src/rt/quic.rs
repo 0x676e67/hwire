@@ -4,7 +4,8 @@
 //! byte stream. The traits do not create UDP sockets, perform TLS, or choose a
 //! runtime. Adapters provide unframed writes and a pollable stop notification
 //! that HTTP/3 forwards, so cancellation remains observable after it takes
-//! ownership of a stream.
+//! ownership of a stream. [`Compat`] adapts transports written against http3's
+//! own `quic` traits, such as `http3-quic`.
 //!
 //! Every poll method returning `Pending` must arrange for the current task to
 //! wake when progress or a terminal error becomes observable. Implementations
@@ -16,8 +17,10 @@ pub use http3::quic::{
     ConnectionErrorIncoming as ConnectionError, StreamErrorIncoming as StreamError, StreamId,
 };
 
+pub use self::compat::Compat;
 #[cfg(feature = "http3-datagram")]
 pub use self::datagram::{DatagramConnection, DatagramError, RecvDatagram, SendDatagram};
+mod compat;
 #[cfg(feature = "http3-datagram")]
 mod datagram;
 
