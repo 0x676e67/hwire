@@ -24,6 +24,7 @@ use crate::{
     dispatch::{Envelope, TrySendError},
     error::BoxError,
     ext::OnPreserveHeader,
+    proto::headers,
     Error, Result,
 };
 
@@ -148,9 +149,9 @@ pub(crate) async fn exchange<O, B>(
         let length = if length.is_none() && !connect {
             let size = request.body().size_hint().exact();
             if let Some(size) = size {
-                request
-                    .headers_mut()
-                    .insert(header::CONTENT_LENGTH, size.into());
+                if size != 0 || headers::method_has_defined_payload_semantics(request.method()) {
+                    headers::set_content_length_if_missing(request.headers_mut(), size);
+                }
             }
             size
         } else {

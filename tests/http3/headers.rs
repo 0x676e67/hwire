@@ -71,3 +71,78 @@ async fn preserve_header_callback_reaches_peer_in_order() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn request_content_length_matches_method_and_body() {
+    let cases = [
+        ("GET", "", None),
+        ("HEAD", "", None),
+        ("DELETE", "", None),
+        ("OPTIONS", "", None),
+        ("POST", "", Some("0")),
+        ("PUT", "", Some("0")),
+        ("PATCH", "", Some("0")),
+        ("GET", "data", Some("4")),
+        ("GET", "", Some("0")),
+    ];
+    bounded(async {
+        let Pair {
+            mut tx,
+            driver,
+            mut server,
+            _endpoints,
+            ..
+        } = pair(Http3Options::default()).await;
+        let drive = tokio::spawn(driver);
+        let peer = tokio::spawn(async move {
+            for (method, body, length) in cases {
+                let (request, mut stream) = server
+                    .accept()
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .resolve_request()
+                    .await
+                    .unwrap();
+                assert_eq!(request.method(), method);
+                assert_eq!(
+                    request
+                        .headers()
+                        .get("content-length")
+                        .map(|v| v.to_str().unwrap()),
+                    length,
+                    "{method}"
+                );
+                let mut received = BytesMut::new();
+                while let Some(mut data) = stream.recv_data().await.unwrap() {
+                    received.extend_from_slice(&data.copy_to_bytes(data.remaining()));
+                }
+                assert_eq!(received.as_ref(), body.as_bytes());
+                stream.send_response(Response::new(())).await.unwrap();
+                stream.finish().await.unwrap();
+            }
+            let _ = server.accept().await;
+        });
+        for (index, (method, body, _)) in cases.into_iter().enumerate() {
+            let mut request = Request::builder().method(method).uri("https://localhost/");
+            if index == cases.len() - 1 {
+                request = request.header("content-length", "0");
+            }
+            tx.try_send_request(
+                request
+                    .body(Full::new(Bytes::from_static(body.as_bytes())))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .into_body()
+            .collect()
+            .await
+            .unwrap();
+        }
+        drop(tx);
+        drive.await.unwrap().unwrap();
+        peer.await.unwrap();
+    })
+    .await;
+}
