@@ -24,7 +24,7 @@ default = []
 full = ["tracing", "http3", "http3-datagram"]
 
 # HTTP/3 over an externally established QUIC connection.
-http3 = ["dep:http3", "tokio-util/rt"]
+http3 = ["dep:http3"]
 http3-datagram = ["http3", "dep:http3-datagram"]
 
 # Enable tracing logging.
