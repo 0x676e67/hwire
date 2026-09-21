@@ -133,5 +133,5 @@ incremental = false
 
 # PR #111: the client driver owns connection lifetime; includes PR #107.
 [patch.crates-io]
-http3 = { git = "https://github.com/0x676e67/http3", rev = "761f521ff5dffea2a41772a619f233a055483d17" }
-http3-quic = { git = "https://github.com/0x676e67/http3", rev = "761f521ff5dffea2a41772a619f233a055483d17" }
+http3 = { git = "https://github.com/0x676e67/http3", rev = "07ab243585dc1f92917bf0dc91d8df1af54c0f8f" }
+http3-quic = { git = "https://github.com/0x676e67/http3", rev = "07ab243585dc1f92917bf0dc91d8df1af54c0f8f" }
