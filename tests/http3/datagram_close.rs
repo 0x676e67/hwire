@@ -346,6 +346,7 @@ async fn late_datagram_after_response_drop_preserves_upload() {
         upload.send(()).expect("late datagram must preserve upload");
         progress(upload_received, &mut driver, &jobs).await.unwrap();
         drop(tx);
+        Pin::new(&mut driver).graceful_shutdown();
         poll_fn(|cx| {
             jobs.poll(cx);
             Pin::new(&mut driver).poll(cx)

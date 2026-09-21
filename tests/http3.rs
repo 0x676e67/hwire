@@ -193,7 +193,7 @@ async fn canceling_partially_written_headers_resets_stream_and_releases_slot() {
             .handshake(pause.wrap(crate::native::Connection::new(client)))
             .await
             .unwrap();
-        let client_driver = tokio::spawn(driver);
+        let mut client_driver = Box::pin(driver);
         let mut server = h3::server::builder()
             .build::<_, Bytes>(h3_quinn::Connection::new(server))
             .await
@@ -249,7 +249,8 @@ async fn canceling_partially_written_headers_resets_stream_and_releases_slot() {
             .to_bytes()
             .is_empty());
         drop(tx);
-        client_driver.await.unwrap().unwrap();
+        client_driver.as_mut().graceful_shutdown();
+        client_driver.await.unwrap();
         server_task.await.unwrap();
     })
     .await;
@@ -276,7 +277,7 @@ async fn response_header_budgets_have_distinct_failure_scopes() {
                 server_quic,
                 _endpoints,
             } = pair(options.build()).await;
-            let client_driver = tokio::spawn(driver);
+            let mut client_driver = Box::pin(driver);
             let (rejected, notified) = oneshot::channel();
             let server_task = tokio::spawn(async move {
                 let resolver = server.accept().await.unwrap().unwrap();
@@ -331,7 +332,7 @@ async fn response_header_budgets_have_distinct_failure_scopes() {
             assert!(!error.error().is_user());
             rejected.send(()).unwrap();
             if compressed {
-                assert!(client_driver.await.unwrap().is_err());
+                assert!(client_driver.await.is_err());
                 assert!(tx.ready().await.is_err());
             } else {
                 let response = tx
@@ -344,7 +345,8 @@ async fn response_header_budgets_have_distinct_failure_scopes() {
                     .unwrap();
                 assert!(response.into_body().collect().await.unwrap().to_bytes().is_empty());
                 drop(tx);
-                client_driver.await.unwrap().unwrap();
+                client_driver.as_mut().graceful_shutdown();
+                client_driver.await.unwrap();
             }
             server_task.await.unwrap();
         }
@@ -362,7 +364,7 @@ async fn streaming_post_trailers_and_last_sender_drop() {
             _endpoints,
             ..
         } = pair(Http3Options::default()).await;
-        let client_driver = tokio::spawn(driver);
+        let mut client_driver = Box::pin(driver);
         let (received, ready) = oneshot::channel();
         let server_task = tokio::spawn(async move {
             let resolver = server.accept().await.unwrap().unwrap();
@@ -412,7 +414,8 @@ async fn streaming_post_trailers_and_last_sender_drop() {
         let body = response.into_body().collect().await.unwrap();
         assert_eq!(body.trailers().unwrap()["x-complete"], "yes");
         assert_eq!(body.to_bytes(), "hello");
-        client_driver.await.unwrap().unwrap();
+        client_driver.as_mut().graceful_shutdown();
+        client_driver.await.unwrap();
         server_task.await.unwrap();
     })
     .await;
@@ -428,7 +431,7 @@ async fn conflicting_host_returns_request_without_closing_connection() {
             _endpoints,
             ..
         } = pair(Http3Options::builder().max_concurrent_requests(1).build()).await;
-        let drive = tokio::spawn(driver);
+        let mut drive = Box::pin(driver);
         let peer = tokio::spawn(async move {
             let (request, mut stream) = server
                 .accept()
@@ -472,7 +475,8 @@ async fn conflicting_host_returns_request_without_closing_connection() {
             "unconsumed"
         );
         drop(tx);
-        drive.await.unwrap().unwrap();
+        drive.as_mut().graceful_shutdown();
+        drive.await.unwrap();
         peer.await.unwrap();
     })
     .await;
@@ -534,7 +538,7 @@ async fn unbounded_queue_returns_unattempted_requests_on_close() {
 async fn dropped_response_body_cancels_a_pending_receive() {
     bounded(async {
         let Pair { mut tx, driver, mut server, _endpoints, .. } = pair(Http3Options::default()).await;
-        let client_driver = tokio::spawn(driver);
+        let mut client_driver = Box::pin(driver);
         let (dropped, wait_drop) = oneshot::channel();
         let (observed, wait_observed) = oneshot::channel();
         let server_task = tokio::spawn(async move {
@@ -570,7 +574,8 @@ async fn dropped_response_body_cancels_a_pending_receive() {
         let next = tx.try_send_request(Request::get("https://localhost/after-cancel").body(Full::new(Bytes::new())).unwrap()).await.unwrap();
         next.into_body().collect().await.unwrap();
         drop(tx);
-        client_driver.await.unwrap().unwrap();
+        client_driver.as_mut().graceful_shutdown();
+        client_driver.await.unwrap();
         server_task.await.unwrap();
     }).await;
 }
@@ -626,7 +631,7 @@ async fn short_response_is_an_error_and_informationals_are_skipped() {
             _endpoints,
             ..
         } = pair(Http3Options::default()).await;
-        let client_driver = tokio::spawn(driver);
+        let mut client_driver = Box::pin(driver);
         let server_task = tokio::spawn(async move {
             let resolver = server.accept().await.unwrap().unwrap();
             let stream_task = tokio::spawn(async move {
@@ -678,7 +683,8 @@ async fn short_response_is_an_error_and_informationals_are_skipped() {
         assert!(!error.is_user());
         assert!(body.frame().await.is_none());
         drop(tx);
-        client_driver.await.unwrap().unwrap();
+        client_driver.as_mut().graceful_shutdown();
+        client_driver.await.unwrap();
         server_task.await.unwrap();
     })
     .await;
@@ -695,7 +701,7 @@ async fn connect_flush_and_half_close_preserve_incoming_bytes() {
             _endpoints,
             ..
         } = pair(Http3Options::default()).await;
-        let client_driver = tokio::spawn(driver);
+        let mut client_driver = Box::pin(driver);
         let server_task = tokio::spawn(async move {
             let resolver = server.accept().await.unwrap().unwrap();
             let stream_task = tokio::spawn(async move {
@@ -736,7 +742,8 @@ async fn connect_flush_and_half_close_preserve_incoming_bytes() {
         let mut bytes = Vec::new();
         tunnel.read_to_end(&mut bytes).await.unwrap();
         assert_eq!(bytes, b"received FIN");
-        client_driver.await.unwrap().unwrap();
+        client_driver.as_mut().graceful_shutdown();
+        client_driver.await.unwrap();
         server_task.await.unwrap();
     })
     .await;
@@ -752,7 +759,7 @@ async fn extended_connect_requires_peer_permission() {
             _endpoints,
             ..
         } = pair(Http3Options::default()).await;
-        let client_driver = tokio::spawn(driver);
+        let mut client_driver = Box::pin(driver);
         let server_task = tokio::spawn(async move {
             match server.accept().await {
                 Ok(None) => {}
@@ -770,7 +777,8 @@ async fn extended_connect_requires_peer_permission() {
         assert!(error.error().is_user());
         assert!(error.message().is_some());
         drop(tx);
-        client_driver.await.unwrap().unwrap();
+        client_driver.as_mut().graceful_shutdown();
+        client_driver.await.unwrap();
         server_task.await.unwrap();
     })
     .await;
@@ -843,7 +851,7 @@ where
             exec.clone(),
         )
         .await;
-        let client_driver = tokio::spawn(driver);
+        let mut client_driver = Box::pin(driver);
         let server_task = tokio::spawn(async move {
             let resolver = server.accept().await.unwrap().unwrap();
             let first = tokio::spawn(async move {
@@ -912,7 +920,8 @@ where
             .to_bytes()
             .is_empty());
         drop(tx);
-        client_driver.await.unwrap().unwrap();
+        client_driver.as_mut().graceful_shutdown();
+        client_driver.await.unwrap();
         server_task.await.unwrap();
     })
     .await;
@@ -934,7 +943,7 @@ async fn assert_user_body_error(cause: Box<dyn std::error::Error + Send + Sync>)
             _endpoints,
             ..
         } = pair_with(Http3Options::default(), Exec).await;
-        let client_driver = tokio::spawn(driver);
+        let mut client_driver = Box::pin(driver);
         let server_task = tokio::spawn(async move {
             let mut tasks = tokio::task::JoinSet::new();
             while let Ok(Some(resolver)) = server.accept().await {
@@ -961,7 +970,8 @@ async fn assert_user_body_error(cause: Box<dyn std::error::Error + Send + Sync>)
         assert!(!error.error().is_h3_request_rejected());
         assert!(error.message().is_none());
         drop(tx);
-        client_driver.await.unwrap().unwrap();
+        client_driver.as_mut().graceful_shutdown();
+        client_driver.await.unwrap();
         server_task.await.unwrap();
     })
     .await;
@@ -994,7 +1004,7 @@ async fn datagram_sessions_route_by_stream_and_close_with_control() {
             server_quic,
             _endpoints,
         } = pair_config(Http3Options::default(), Exec, true, true, true, None).await;
-        let client_driver = tokio::spawn(driver);
+        let mut client_driver = Box::pin(driver);
         let server_task = tokio::spawn(async move {
             let mut tasks = tokio::task::JoinSet::new();
             for _ in 0..2 {
@@ -1057,7 +1067,8 @@ async fn datagram_sessions_route_by_stream_and_close_with_control() {
             SendErrorKind::Closed
         );
         drop(tx);
-        client_driver.await.unwrap().unwrap();
+        client_driver.as_mut().graceful_shutdown();
+        client_driver.await.unwrap();
         server_task.await.unwrap();
     })
     .await;
@@ -1095,7 +1106,7 @@ async fn invalid_datagram_on_ordinary_request(connect: bool) {
             None,
         )
         .await;
-        let client_driver = tokio::spawn(driver);
+        let mut client_driver = Box::pin(driver);
         let (send_packet, ready) = oneshot::channel();
         let (reset, reset_seen) = oneshot::channel();
         let server_task = tokio::spawn(async move {
@@ -1178,7 +1189,8 @@ async fn invalid_datagram_on_ordinary_request(connect: bool) {
             assert!(canceled_response.into_body().collect().await.is_err());
         }
         drop(tx);
-        client_driver.await.unwrap().unwrap();
+        client_driver.as_mut().graceful_shutdown();
+        client_driver.await.unwrap();
         server_task.await.unwrap();
     })
     .await;
@@ -1203,7 +1215,7 @@ async fn datagram_before_response_head_fails_request_and_releases_slot() {
             None,
         )
         .await;
-        let client_driver = tokio::spawn(driver);
+        let mut client_driver = Box::pin(driver);
         let server_task = tokio::spawn(async move {
             let resolver = server.accept().await.unwrap().unwrap();
             let first = tokio::spawn(async move {
@@ -1266,7 +1278,8 @@ async fn datagram_before_response_head_fails_request_and_releases_slot() {
             .to_bytes()
             .is_empty());
         drop(tx);
-        client_driver.await.unwrap().unwrap();
+        client_driver.as_mut().graceful_shutdown();
+        client_driver.await.unwrap();
         server_task.await.unwrap();
     })
     .await;
@@ -1285,7 +1298,7 @@ async fn datagram_unavailable_preserves_reliable_control_stream() {
             _endpoints,
             ..
         } = pair_config(Http3Options::default(), Exec, true, false, true, None).await;
-        let client_driver = tokio::spawn(driver);
+        let mut client_driver = Box::pin(driver);
         let server_task = tokio::spawn(async move {
             let resolver = server.accept().await.unwrap().unwrap();
             let stream_task = tokio::spawn(async move {
@@ -1315,7 +1328,8 @@ async fn datagram_unavailable_preserves_reliable_control_stream() {
         assert_eq!(echo, [0, 2, 0, 42]);
         drop(control);
         drop(tx);
-        client_driver.await.unwrap().unwrap();
+        client_driver.as_mut().graceful_shutdown();
+        client_driver.await.unwrap();
         server_task.await.unwrap();
     })
     .await;
@@ -1331,7 +1345,7 @@ async fn forbidden_response_fields_fail_the_request_without_closing_connection()
             _endpoints,
             ..
         } = pair(Http3Options::default()).await;
-        let client_driver = tokio::spawn(driver);
+        let mut client_driver = Box::pin(driver);
         let server_task = tokio::spawn(async move {
             let mut tasks = tokio::task::JoinSet::new();
             for header in [
@@ -1380,7 +1394,8 @@ async fn forbidden_response_fields_fail_the_request_without_closing_connection()
             .unwrap();
         response.into_body().collect().await.unwrap();
         drop(tx);
-        client_driver.await.unwrap().unwrap();
+        client_driver.as_mut().graceful_shutdown();
+        client_driver.await.unwrap();
         server_task.await.unwrap();
     })
     .await;
@@ -1444,7 +1459,7 @@ async fn peer_stop_cancels_upload(ready_empty: bool) {
             Exec,
         )
         .await;
-        let client_driver = tokio::spawn(driver);
+        let mut client_driver = Box::pin(driver);
         let (polled, body_polled) = oneshot::channel();
         let server_task = tokio::spawn(async move {
             let mut first_body = Some(body_polled);
@@ -1504,7 +1519,8 @@ async fn peer_stop_cancels_upload(ready_empty: bool) {
                 .unwrap();
         }
         drop(tx);
-        client_driver.await.unwrap().unwrap();
+        client_driver.as_mut().graceful_shutdown();
+        client_driver.await.unwrap();
         server_task.await.unwrap();
     })
     .await;
@@ -1522,7 +1538,7 @@ async fn dropped_unpolled_request_after_response_cancels_pending_upload() {
             .handshake(pause.wrap(crate::native::Connection::new(client)))
             .await
             .unwrap();
-        let client_driver = tokio::spawn(driver);
+        let mut client_driver = Box::pin(driver);
         let mut server = h3::server::builder()
             .build::<_, Bytes>(h3_quinn::Connection::new(server))
             .await
@@ -1568,7 +1584,8 @@ async fn dropped_unpolled_request_after_response_cancels_pending_upload() {
         body_dropped.await.unwrap();
         reset_observed.await.unwrap();
         drop(tx);
-        client_driver.await.unwrap().unwrap();
+        client_driver.as_mut().graceful_shutdown();
+        client_driver.await.unwrap();
         server_task.await.unwrap();
     })
     .await;
@@ -1594,7 +1611,7 @@ async fn canceled_request_waiting_for_quic_credit_releases_active_slot() {
             .build::<_, Bytes>(h3_quinn::Connection::new(server))
             .await
             .unwrap();
-        let client_driver = tokio::spawn(driver);
+        let mut client_driver = Box::pin(driver);
         let mut canceled = tokio_test::task::spawn(
             tx.try_send_request(
                 Request::get("https://localhost/canceled")
@@ -1640,7 +1657,8 @@ async fn canceled_request_waiting_for_quic_credit_releases_active_slot() {
             .to_bytes()
             .is_empty());
         drop(tx);
-        client_driver.await.unwrap().unwrap();
+        client_driver.as_mut().graceful_shutdown();
+        client_driver.await.unwrap();
         server_task.await.unwrap();
     })
     .await;
@@ -1812,7 +1830,7 @@ async fn settings_order_and_configured_values_reach_upstream_server() {
                 .build::<_, Bytes>(capture.connection(server))
                 .await
                 .unwrap();
-            let client_driver = tokio::spawn(driver);
+            let mut client_driver = Box::pin(driver);
             let server_task = tokio::spawn(async move {
                 let resolver = server.accept().await.unwrap().unwrap();
                 let (_, mut stream) = resolver.resolve_request().await.unwrap();
@@ -1835,7 +1853,8 @@ async fn settings_order_and_configured_values_reach_upstream_server() {
                 vec![(7, 0), (6, 32100), (0x33, u64::from(native))]
             );
             drop(tx);
-            client_driver.await.unwrap().unwrap();
+            client_driver.as_mut().graceful_shutdown();
+            client_driver.await.unwrap();
             server_task.await.unwrap();
         }
     })
@@ -1861,7 +1880,7 @@ async fn datagram_handshake_rejects_order_omitting_its_setting() {
 async fn invalid_response_lengths_signal_message_error_and_preserve_connection() {
     bounded(async {
         let Pair { mut tx, driver, mut server, _endpoints, .. } = pair(Http3Options::default()).await;
-        let client_driver = tokio::spawn(driver);
+        let mut client_driver = Box::pin(driver);
         let (rejected, mut notified) = tokio::sync::mpsc::channel(1);
         let (observed, mut confirmed) = tokio::sync::mpsc::channel(1);
         let server_task = tokio::spawn(async move {
@@ -1904,7 +1923,8 @@ async fn invalid_response_lengths_signal_message_error_and_preserve_connection()
             .body(Full::new(Bytes::new())).unwrap()).await.unwrap();
         response.into_body().collect().await.unwrap();
         drop(tx);
-        client_driver.await.unwrap().unwrap();
+        client_driver.as_mut().graceful_shutdown();
+        client_driver.await.unwrap();
         server_task.await.unwrap();
     }).await;
 }
@@ -1919,7 +1939,7 @@ async fn head_204_and_304_end_without_content() {
             _endpoints,
             ..
         } = pair(Http3Options::default()).await;
-        let client_driver = tokio::spawn(driver);
+        let mut client_driver = Box::pin(driver);
         let server_task = tokio::spawn(async move {
             for (status, length) in [
                 (200, Some("123")),
@@ -1966,7 +1986,8 @@ async fn head_204_and_304_end_without_content() {
             assert!(http_body::Body::is_end_stream(&body));
         }
         drop(tx);
-        client_driver.await.unwrap().unwrap();
+        client_driver.as_mut().graceful_shutdown();
+        client_driver.await.unwrap();
         server_task.await.unwrap();
     })
     .await;
@@ -1990,7 +2011,7 @@ async fn unknown_length_upload_and_response_preserve_trailers() {
             _endpoints,
             ..
         } = pair_with(Http3Options::default(), Exec).await;
-        let client_driver = tokio::spawn(driver);
+        let mut client_driver = Box::pin(driver);
         let server_task = tokio::spawn(async move {
             let resolver = server.accept().await.unwrap().unwrap();
             let (_, mut stream) = resolver.resolve_request().await.unwrap();
@@ -2018,7 +2039,8 @@ async fn unknown_length_upload_and_response_preserve_trailers() {
         assert_eq!(body.trailers().unwrap()["x-upload-complete"], "yes");
         assert_eq!(body.to_bytes(), "onetwo");
         drop(tx);
-        client_driver.await.unwrap().unwrap();
+        client_driver.as_mut().graceful_shutdown();
+        client_driver.await.unwrap();
         server_task.await.unwrap();
     })
     .await;

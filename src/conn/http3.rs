@@ -13,10 +13,9 @@
 //!   CONNECT tunnels.
 //! - [`Connection`] resolves once the task finishes. Requests progress without it being polled, but
 //!   it must be kept: dropping it closes the QUIC connection and every outstanding exchange.
-//! - Dropping the last [`SendRequest`] drains the connection: requests created earlier still run,
-//!   and the task closes the connection once every exchange, including the acknowledgment of each
-//!   request FIN, is done. [`Connection::graceful_shutdown`] does the same and returns requests
-//!   still waiting for admission.
+//! - Dropping [`SendRequest`] handles does not close the connection or cancel existing requests.
+//!   [`Connection::graceful_shutdown`] returns requests still waiting for admission and closes the
+//!   connection once every admitted exchange, including acknowledgment of its FIN, is done.
 //!
 //! Admission is limited locally by [`Http3Options::max_concurrent_requests`]. Extended CONNECT with
 //! HTTP Datagram sessions lives in the `datagram` submodule with the `http3-datagram` feature.
@@ -36,7 +35,7 @@ use std::{
     future::{poll_fn, Future},
     marker::PhantomData,
     pin::Pin,
-    sync::{atomic::Ordering, Arc, Mutex, PoisonError},
+    sync::{Arc, Mutex, PoisonError},
     task::{ready, Context, Poll},
 };
 
@@ -143,7 +142,6 @@ struct Opening<O: quic::OpenStreams<Bytes>>(Option<O>);
 
 impl<B> Clone for SendRequest<B> {
     fn clone(&self) -> Self {
-        self.shared.senders.fetch_add(1, Ordering::AcqRel);
         let exchange = self
             .exchange
             .lock()
@@ -152,15 +150,6 @@ impl<B> Clone for SendRequest<B> {
         Self {
             exchange: Mutex::new(exchange),
             shared: self.shared.clone(),
-        }
-    }
-}
-
-impl<B> Drop for SendRequest<B> {
-    fn drop(&mut self) {
-        // The last handle starts the drain, like a closed request queue.
-        if self.shared.senders.fetch_sub(1, Ordering::AcqRel) == 1 {
-            self.shared.drain();
         }
     }
 }
@@ -201,8 +190,7 @@ impl<B> SendRequest<B> {
         &mut self,
         request: Request<B>,
     ) -> impl Future<Output = Result<Response<Incoming>, TrySendError<Request<B>>>> {
-        // Reserve synchronously so a request created before the last handle
-        // drops is still sent, like a queued request.
+        // Remember closure at creation, before the request future is polled.
         let reservation = (!self.shared.is_closed()).then(|| Active::reserve(&self.shared));
         self.exchange
             .get_mut()

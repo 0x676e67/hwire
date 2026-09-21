@@ -96,7 +96,7 @@ async fn handshake_accepts_send_only_executor_and_non_unpin_backend() {
                     .unwrap()
             }
         );
-        let client_driver = tokio::spawn(driver);
+        let mut client_driver = Box::pin(driver);
         let server_task = tokio::spawn(async move {
             let (_, mut stream) = server
                 .accept()
@@ -126,7 +126,8 @@ async fn handshake_accepts_send_only_executor_and_non_unpin_backend() {
             .to_bytes()
             .is_empty());
         drop(tx);
-        client_driver.await.unwrap().unwrap();
+        client_driver.as_mut().graceful_shutdown();
+        client_driver.await.unwrap();
         server_task.await.unwrap();
     })
     .await;

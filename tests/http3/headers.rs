@@ -34,7 +34,7 @@ async fn preserve_header_callback_reaches_peer_in_order() {
             _endpoints,
             ..
         } = pair(Http3Options::default()).await;
-        let drive = tokio::spawn(driver);
+        let mut drive = Box::pin(driver);
         let peer = tokio::spawn(async move {
             let (request, mut stream) = server
                 .accept()
@@ -68,7 +68,8 @@ async fn preserve_header_callback_reaches_peer_in_order() {
             .await
             .unwrap();
         drop(tx);
-        drive.await.unwrap().unwrap();
+        drive.as_mut().graceful_shutdown();
+        drive.await.unwrap();
         peer.await.unwrap();
     })
     .await;
@@ -95,7 +96,7 @@ async fn request_content_length_matches_method_and_body() {
             _endpoints,
             ..
         } = pair(Http3Options::default()).await;
-        let drive = tokio::spawn(driver);
+        let mut drive = Box::pin(driver);
         let peer = tokio::spawn(async move {
             for (method, body, length) in cases {
                 let (request, mut stream) = server
@@ -143,7 +144,8 @@ async fn request_content_length_matches_method_and_body() {
             .unwrap();
         }
         drop(tx);
-        drive.await.unwrap().unwrap();
+        drive.as_mut().graceful_shutdown();
+        drive.await.unwrap();
         peer.await.unwrap();
     })
     .await;
@@ -159,7 +161,7 @@ async fn connection_headers_are_stripped_before_sending() {
             _endpoints,
             ..
         } = pair(Http3Options::default()).await;
-        let drive = tokio::spawn(driver);
+        let mut drive = Box::pin(driver);
         let peer = tokio::spawn(async move {
             for te in [None, Some("trailers")] {
                 let (request, mut stream) = server
@@ -208,7 +210,8 @@ async fn connection_headers_are_stripped_before_sending() {
                 .unwrap();
         }
         drop(tx);
-        drive.await.unwrap().unwrap();
+        drive.as_mut().graceful_shutdown();
+        drive.await.unwrap();
         peer.await.unwrap();
     })
     .await;
@@ -224,7 +227,7 @@ async fn informational_content_length_does_not_set_final_body_length() {
             _endpoints,
             ..
         } = pair(Http3Options::default()).await;
-        let drive = tokio::spawn(driver);
+        let mut drive = Box::pin(driver);
         let peer = tokio::spawn(async move {
             let (_, mut stream) = server
                 .accept()
@@ -273,7 +276,8 @@ async fn informational_content_length_does_not_set_final_body_length() {
             "done"
         );
         drop(tx);
-        drive.await.unwrap().unwrap();
+        drive.as_mut().graceful_shutdown();
+        drive.await.unwrap();
         peer.await.unwrap();
     })
     .await;
@@ -289,7 +293,7 @@ async fn response_size_hint_tracks_data_and_keeps_trailers() {
             _endpoints,
             ..
         } = pair(Http3Options::default()).await;
-        let drive = tokio::spawn(driver);
+        let mut drive = Box::pin(driver);
         let (resume, resumed) = oneshot::channel();
         let peer = tokio::spawn(async move {
             let (_, mut stream) = server
@@ -358,7 +362,8 @@ async fn response_size_hint_tracks_data_and_keeps_trailers() {
         assert!(body.is_end_stream());
         assert_eq!(body.size_hint().exact(), Some(0));
         drop(tx);
-        drive.await.unwrap().unwrap();
+        drive.as_mut().graceful_shutdown();
+        drive.await.unwrap();
         peer.await.unwrap();
     })
     .await;

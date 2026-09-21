@@ -15,7 +15,7 @@ async fn tunnel_drain_waits_for_upload_fin_ack() {
 }
 
 async fn check_drain(connect: bool) {
-    for graceful in [false, true] {
+    for drop_sender in [false, true] {
         bounded(async {
             let (_, server_config, client_config) = tls::config();
             let (client, server, _endpoints) = quic_pair(server_config, client_config).await;
@@ -35,7 +35,7 @@ async fn check_drain(connect: bool) {
                 tokio::select! {
                     result = &mut driver => return result,
                     _ = requested => {
-                        if graceful { driver.as_mut().graceful_shutdown(); }
+                        driver.as_mut().graceful_shutdown();
                     }
                 }
                 driver.await
@@ -70,12 +70,10 @@ async fn check_drain(connect: bool) {
             };
             let request = if connect { Request::connect("localhost:443") } else { Request::post("https://localhost/") };
             let mut response = tx.try_send_request(request.body(body).unwrap()).await.unwrap();
-            if graceful {
-                shutdown.send(()).unwrap();
-            } else {
+            if drop_sender {
                 drop(tx);
-                drop(shutdown);
             }
+            shutdown.send(()).unwrap();
             if connect {
                 let mut tunnel = wreq_proto::upgrade::on(&mut response).await.unwrap();
                 let mut incoming = Vec::new();
@@ -102,7 +100,7 @@ async fn check_drain(connect: bool) {
 
 #[tokio::test]
 async fn empty_request_drain_waits_for_fin_ack() {
-    for graceful in [false, true] {
+    for drop_sender in [false, true] {
         bounded(async {
             let (_, server_config, client_config) = tls::config();
             let (client, server, _endpoints) = quic_pair(server_config, client_config).await;
@@ -127,9 +125,7 @@ async fn empty_request_drain_waits_for_fin_ack() {
                 tokio::select! {
                     result = &mut driver => return result,
                     _ = requested => {
-                        if graceful {
-                            driver.as_mut().graceful_shutdown();
-                        }
+                        driver.as_mut().graceful_shutdown();
                     }
                 }
                 driver.await
@@ -162,12 +158,10 @@ async fn empty_request_drain_waits_for_fin_ack() {
                 .unwrap()
                 .to_bytes()
                 .is_empty());
-            if graceful {
-                shutdown.send(()).unwrap();
-            } else {
+            if drop_sender {
                 drop(tx);
-                drop(shutdown);
             }
+            shutdown.send(()).unwrap();
             // The request FIN is sent but not yet acknowledged; the drain must
             // wait for it even though no upload task exists.
             tokio::select! {
@@ -203,7 +197,7 @@ async fn empty_request_fails_when_its_fin_reports_a_stream_error() {
                     .unwrap()
             },
         );
-        let drive = tokio::spawn(driver);
+        let mut drive = Box::pin(driver);
         let peer = tokio::spawn(async move {
             let (_, mut stream) = server
                 .accept()
@@ -230,7 +224,8 @@ async fn empty_request_fails_when_its_fin_reports_a_stream_error() {
         assert!(!error.error().is_user());
         assert!(error.message().is_none());
         drop(tx);
-        drive.await.unwrap().unwrap();
+        drive.as_mut().graceful_shutdown();
+        drive.await.unwrap();
         peer.await.unwrap();
     })
     .await;

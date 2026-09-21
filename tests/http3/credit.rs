@@ -22,7 +22,7 @@ async fn canceled_openers_do_not_strand_other_credit_waiters() {
             .handshake(pause.wrap(crate::native::Connection::new(client)))
             .await
             .unwrap();
-        let client_driver = tokio::spawn(driver);
+        let mut client_driver = Box::pin(driver);
         let mut server = h3::server::builder()
             .build::<_, Bytes>(h3_quinn::Connection::new(server))
             .await
@@ -100,7 +100,8 @@ async fn canceled_openers_do_not_strand_other_credit_waiters() {
         while survivors.next().await.is_some() {}
         assert!(client_stats.stats().frame_rx.max_streams_bidi > 1);
         drop(tx);
-        client_driver.await.unwrap().unwrap();
+        client_driver.as_mut().graceful_shutdown();
+        client_driver.await.unwrap();
         peer.await.unwrap();
     })
     .await;
