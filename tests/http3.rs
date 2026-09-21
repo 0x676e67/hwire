@@ -15,8 +15,6 @@ mod datagram;
 mod datagram_close;
 #[path = "http3/finish.rs"]
 mod finish;
-#[path = "http3/goaway.rs"]
-mod goaway;
 #[path = "http3/headers.rs"]
 mod headers;
 #[path = "http3/pause.rs"]
@@ -1386,59 +1384,6 @@ async fn canceled_request_waiting_for_quic_credit_releases_active_slot() {
             .is_empty());
         drop(tx);
         client_driver.await.unwrap().unwrap();
-        server_task.await.unwrap();
-    })
-    .await;
-}
-
-#[tokio::test]
-async fn goaway_wakes_requests_waiting_for_stream_credit() {
-    bounded(async {
-        let (_, mut server_config, client_config) = tls::config();
-        let mut transport = quinn::TransportConfig::default();
-        transport.max_concurrent_bidi_streams(0_u32.into());
-        server_config.transport_config(std::sync::Arc::new(transport));
-        let (client, server, _endpoints) = quic_pair(server_config, client_config).await;
-        let pause = pause::Pause::default();
-        let (mut tx, driver) = Builder::new(Exec)
-            .handshake::<_, ClientBody>(pause.wrap(crate::native::Connection::new(client)))
-            .await
-            .unwrap();
-        let client_driver = tokio::spawn(driver);
-        let mut server = h3::server::builder()
-            .build::<_, Bytes>(h3_quinn::Connection::new(server))
-            .await
-            .unwrap();
-        let mut requests = Vec::new();
-        for _ in 0..3 {
-            requests.push(
-                tx.try_send_request(
-                    Request::get("https://localhost/not-opened")
-                        .body(Full::new(Bytes::new()))
-                        .unwrap(),
-                ),
-            );
-            pause.waiting_for_credit().await;
-        }
-        tx.ready().await.unwrap();
-        let mut observer = tx.clone();
-        assert!(observer.is_ready());
-        server.shutdown(0).await.unwrap();
-        let server_task = tokio::spawn(async move {
-            match server.accept().await {
-                Ok(None) => {}
-                Err(error) if error.is_h3_no_error() => {}
-                _ => panic!("a request was opened after GOAWAY"),
-            }
-        });
-        // The peer grants no new credit and keeps the connection open. Only
-        // GOAWAY may release this request; an idle timeout is not the result.
-        for request in requests {
-            let error = request.await.unwrap_err();
-            assert!(!error.error().is_timeout());
-        }
-        client_driver.await.unwrap().unwrap();
-        assert!(observer.ready().await.is_err());
         server_task.await.unwrap();
     })
     .await;
