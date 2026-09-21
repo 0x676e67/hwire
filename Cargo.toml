@@ -129,7 +129,7 @@ incremental = false
 codegen-units = 1
 incremental = false
 
-# PR #107 adds `SendStream::poll_stopped` on top of the 0.1.1 fixes.
+# PR #107 head: `SendStream::poll_stopped`, GOAWAY rejection checked on poll, and the header decoding cleanup.
 [patch.crates-io]
-http3 = { git = "https://github.com/0x676e67/http3", rev = "7fea381d5b87cb3a56aa00321fe5df39ddbda106" }
-http3-quic = { git = "https://github.com/0x676e67/http3", rev = "7fea381d5b87cb3a56aa00321fe5df39ddbda106" }
+http3 = { git = "https://github.com/0x676e67/http3", rev = "ebb7181fb3c14ad23ce94268708e831ee4ff1c78" }
+http3-quic = { git = "https://github.com/0x676e67/http3", rev = "ebb7181fb3c14ad23ce94268708e831ee4ff1c78" }
