@@ -10,7 +10,9 @@
 use std::{
     any::Any,
     collections::{BTreeMap, VecDeque},
+    future::Future,
     mem,
+    pin::Pin,
     sync::{Arc, Mutex, MutexGuard, OnceLock, Weak},
     task::{Context, Poll},
 };
@@ -74,12 +76,12 @@ struct Entry {
 pub(crate) struct RequestState {
     id: StreamId,
     registry: Arc<Registry>,
-    pub(crate) invalid: CancellationToken,
     received: AtomicWaker,
     /// Response body to stop when a Datagram invalidates the request, erased
     /// together with the function that knows its concrete type.
     stop_state: OnceLock<Weak<dyn Any + Send + Sync>>,
     stop: OnceLock<fn(&(dyn Any + Send + Sync))>,
+    pub(super) invalid: CancellationToken,
 }
 
 /// Keeps a request registered; dropping it removes the session.
@@ -87,12 +89,10 @@ pub(crate) struct Registration(pub(crate) Arc<RequestState>);
 
 /// Moves packets between the QUIC Datagram transport and the registry; the
 /// connection task polls it.
-pub(crate) trait Drive: Send {
-    /// Polls both directions with bounded work; an error names the code to close with.
-    fn poll(&mut self, cx: &mut Context<'_>) -> Poll<std::result::Result<(), (Code, Error)>>;
-}
+pub(crate) type Drive =
+    Pin<Box<dyn Future<Output = std::result::Result<(), (Code, Error)>> + Send>>;
 
-/// The [`Drive`] implementation over a backend sender and receiver.
+/// Drives a backend sender and receiver with bounded work per poll.
 struct Driver<S, R> {
     sender: S,
     receiver: R,
@@ -120,7 +120,7 @@ pub enum SendErrorKind {
 
 impl Registry {
     /// Creates the registry and the driver for the transport's Datagram halves.
-    pub(crate) fn new<S, R>(sender: S, receiver: R) -> (Arc<Self>, Box<dyn Drive>)
+    pub(crate) fn new<S, R>(sender: S, receiver: R) -> (Arc<Self>, Drive)
     where
         S: quic::SendDatagram + Send + 'static,
         R: quic::RecvDatagram + Send + 'static,
@@ -139,7 +139,7 @@ impl Registry {
             registry: registry.clone(),
             pending: None,
         };
-        (registry, Box::new(driver))
+        (registry, Box::pin(driver))
     }
 
     /// Locks the state, recovering a poisoned lock.
@@ -444,16 +444,22 @@ impl Drop for Registration {
 
 // ===== impl Driver =====
 
-impl<S: quic::SendDatagram + Send, R: quic::RecvDatagram + Send> Drive for Driver<S, R> {
-    fn poll(&mut self, cx: &mut Context<'_>) -> Poll<std::result::Result<(), (Code, Error)>> {
-        self.registry.waker.register(cx.waker());
-        let max_size = self.sender.max_datagram_size();
-        self.registry.lock().max_size = max_size;
+// No field is structurally pinned; the transport methods take `&mut self`.
+impl<S, R> Unpin for Driver<S, R> {}
+
+impl<S: quic::SendDatagram, R: quic::RecvDatagram> Future for Driver<S, R> {
+    type Output = std::result::Result<(), (Code, Error)>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
+        this.registry.waker.register(cx.waker());
+        let max_size = this.sender.max_datagram_size();
+        this.registry.lock().max_size = max_size;
         // Independent bounded budgets keep control/QPACK and both Datagram
         // directions moving even under a continuously ready producer.
         for index in 0..32 {
-            match self.receiver.poll_recv(cx) {
-                Poll::Ready(Ok(Some(packet))) => self
+            match this.receiver.poll_recv(cx) {
+                Poll::Ready(Ok(Some(packet))) => this
                     .registry
                     .receive(packet)
                     .map_err(|error| (Code::H3_DATAGRAM_ERROR, error))?,
@@ -468,33 +474,33 @@ impl<S: quic::SendDatagram + Send, R: quic::RecvDatagram + Send> Drive for Drive
             }
         }
         for index in 0..32 {
-            if self.pending.is_none() {
-                self.pending = self.registry.next();
+            if this.pending.is_none() {
+                this.pending = this.registry.next();
             }
-            let Some((id, packet)) = self.pending.as_ref() else {
+            let Some((id, packet)) = this.pending.as_ref() else {
                 break;
             };
-            let open = self
+            let open = this
                 .registry
                 .lock()
                 .streams
                 .get(id)
                 .is_some_and(|entry| entry.send_open);
             if !open {
-                self.pending = None;
+                this.pending = None;
                 if index == 31 {
                     cx.waker().wake_by_ref();
                 }
                 continue;
             }
-            match self.sender.poll_send(cx, packet) {
+            match this.sender.poll_send(cx, packet) {
                 Poll::Pending => break,
                 Poll::Ready(Err(quic::DatagramError::Connection(error))) => {
                     return Poll::Ready(Err((Code::H3_INTERNAL_ERROR, Error::new_h3(error))));
                 }
                 // MTU/availability can change after local admission. Datagram
                 // delivery is unreliable; never turn TooLarge into Capsules.
-                Poll::Ready(_) => self.pending = None,
+                Poll::Ready(_) => this.pending = None,
             }
             if index == 31 {
                 cx.waker().wake_by_ref();
@@ -791,7 +797,7 @@ mod tests {
             let wakes = Arc::new(Wakes::default());
             let waker = futures_util::task::waker(wakes.clone());
             let mut cx = Context::from_waker(&waker);
-            assert!(driver.poll(&mut cx).is_pending());
+            assert!(Pin::new(&mut driver).poll(&mut cx).is_pending());
             assert_eq!(driver.pending.as_ref().unwrap().0, 0);
             assert!(driver.sender.accepted.is_empty());
             let before_close = wakes.0.load(std::sync::atomic::Ordering::Relaxed);
@@ -803,12 +809,12 @@ mod tests {
             // Closure must wake the driver even while QUIC remains blocked.
             assert!(wakes.0.load(std::sync::atomic::Ordering::Relaxed) > before_close);
             assert_eq!(request.send(&Bytes::new()), Err(SendErrorKind::Closed));
-            assert!(driver.poll(&mut cx).is_pending());
+            assert!(Pin::new(&mut driver).poll(&mut cx).is_pending());
             assert_eq!(driver.pending.as_ref().unwrap().0, 4);
             assert!(driver.sender.accepted.is_empty());
             driver.sender.blocked = false;
             driver.sender.wake.take().unwrap().wake();
-            assert!(driver.poll(&mut cx).is_pending());
+            assert!(Pin::new(&mut driver).poll(&mut cx).is_pending());
             assert!(driver.pending.is_none());
             assert_eq!(driver.sender.accepted.len(), 1);
             let packet = Datagram::decode(driver.sender.accepted.pop().unwrap()).unwrap();
@@ -817,7 +823,7 @@ mod tests {
             assert_eq!(registry.lock().outgoing, 0);
             assert!(!live.0.invalid.is_cancelled());
             live.0.send(&Bytes::from_static(b"reused")).unwrap();
-            assert!(driver.poll(&mut cx).is_pending());
+            assert!(Pin::new(&mut driver).poll(&mut cx).is_pending());
             assert_eq!(driver.sender.accepted.len(), 1);
         }
     }
@@ -845,17 +851,17 @@ mod tests {
         let wakes = Arc::new(Wakes::default());
         let waker = futures_util::task::waker(wakes.clone());
         let mut cx = Context::from_waker(&waker);
-        assert!(driver.poll(&mut cx).is_pending());
+        assert!(Pin::new(&mut driver).poll(&mut cx).is_pending());
         assert_eq!(request.0.max_size(), Some(1298));
         request.0.send(&Bytes::from(vec![7; 1298])).unwrap();
         request.0.send(&Bytes::from_static(b"next")).unwrap();
-        assert!(driver.poll(&mut cx).is_pending());
+        assert!(Pin::new(&mut driver).poll(&mut cx).is_pending());
         assert!(driver.pending.is_some());
         assert!(driver.sender.accepted.is_empty());
         driver.sender.max = 1200;
         driver.sender.blocked = false;
         driver.sender.wake.take().unwrap().wake();
-        assert!(driver.poll(&mut cx).is_pending());
+        assert!(Pin::new(&mut driver).poll(&mut cx).is_pending());
         assert!(driver.pending.is_none());
         assert_eq!(request.0.max_size(), Some(1198));
         assert_eq!(registry.lock().outgoing, 0);
@@ -868,7 +874,7 @@ mod tests {
             Err(SendErrorKind::TooLarge)
         );
         request.0.send(&Bytes::from(vec![7; 1198])).unwrap();
-        assert!(driver.poll(&mut cx).is_pending());
+        assert!(Pin::new(&mut driver).poll(&mut cx).is_pending());
         assert_eq!(driver.sender.accepted[0].len(), 1200);
         assert_eq!(registry.lock().outgoing, 0);
     }

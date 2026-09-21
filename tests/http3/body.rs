@@ -67,6 +67,58 @@ async fn last_sender_drop_dispatches_queued_requests() {
 }
 
 #[tokio::test]
+async fn last_sender_drop_preserves_live_response() {
+    bounded(async {
+        let Pair {
+            mut tx,
+            driver,
+            mut server,
+            _endpoints,
+            ..
+        } = pair(Http3Options::default()).await;
+        let (resume, resumed) = oneshot::channel();
+        let peer = tokio::spawn(async move {
+            let (_, mut stream) = server
+                .accept()
+                .await
+                .unwrap()
+                .unwrap()
+                .resolve_request()
+                .await
+                .unwrap();
+            assert!(stream.recv_data().await.unwrap().is_none());
+            stream.send_response(Response::new(())).await.unwrap();
+            resumed.await.unwrap();
+            stream
+                .send_data(Bytes::from_static(b"response after pool eviction"))
+                .await
+                .unwrap();
+            stream.finish().await.unwrap();
+            assert!(server.accept().await.err().unwrap().is_h3_no_error());
+        });
+        let response = tx
+            .try_send_request(
+                Request::get("https://localhost/evicted")
+                    .body(Full::new(Bytes::new()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        // Pool eviction releases its sender after headers, while the caller
+        // still owns the body. The executor must retain the connection.
+        drop(tx);
+        let mut drive = tokio_test::task::spawn(driver);
+        assert!(drive.poll().is_pending());
+        resume.send(()).unwrap();
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(body, "response after pool eviction");
+        drive.await.unwrap();
+        peer.await.unwrap();
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn last_sender_drop_closes_idle_connection() {
     bounded(async {
         let Pair {

@@ -307,7 +307,7 @@ impl<E> Builder<E> {
     async fn handshake_inner<Q, B>(
         self,
         quic: Q,
-        #[cfg(feature = "http3-datagram")] datagrams: Option<(Arc<Registry>, Box<dyn Drive>)>,
+        #[cfg(feature = "http3-datagram")] datagrams: Option<(Arc<Registry>, Drive)>,
     ) -> Result<(SendRequest<B>, Connection<Q, B, E>)>
     where
         Q: quic::Connection<Bytes>,
@@ -366,7 +366,6 @@ impl<E> Builder<E> {
         let (done, completion) = oneshot::channel();
         let task = ConnTask::new(
             driver,
-            sender.clone(),
             opener.clone(),
             #[cfg(feature = "http3-datagram")]
             datagrams,

@@ -25,10 +25,8 @@ use crate::{rt::quic, Error, Result};
 /// cannot leave requests waiting.
 pub struct ConnTask<Q: quic::Connection<Bytes>> {
     #[cfg(feature = "http3-datagram")]
-    datagrams: Option<Box<dyn Drive>>,
+    datagrams: Option<Drive>,
     driver: http3::client::Connection<Transport<Q>, Bytes>,
-    /// Keeps the protocol layer open while request handles come and go.
-    _sender: http3::client::SendRequest<Transport<Q::OpenStreams>, Bytes>,
     opener: Q::OpenStreams,
     shared: Arc<Shared>,
     done: Option<oneshot::Sender<Result<()>>>,
@@ -45,9 +43,8 @@ impl<Q: quic::Connection<Bytes>> ConnTask<Q> {
     /// outcome to the handle.
     pub(crate) fn new(
         driver: http3::client::Connection<Transport<Q>, Bytes>,
-        sender: http3::client::SendRequest<Transport<Q::OpenStreams>, Bytes>,
         opener: Q::OpenStreams,
-        #[cfg(feature = "http3-datagram")] datagrams: Option<Box<dyn Drive>>,
+        #[cfg(feature = "http3-datagram")] datagrams: Option<Drive>,
         shared: Arc<Shared>,
         done: oneshot::Sender<Result<()>>,
     ) -> Self {
@@ -55,7 +52,6 @@ impl<Q: quic::Connection<Bytes>> ConnTask<Q> {
             #[cfg(feature = "http3-datagram")]
             datagrams,
             driver,
-            _sender: sender,
             opener,
             shared,
             done: Some(done),
@@ -79,6 +75,7 @@ impl<Q: quic::Connection<Bytes>> Future for ConnTask<Q> {
         if this.done.is_none() {
             return Poll::Ready(());
         }
+
         this.shared.register(cx);
         if let Poll::Ready(error) = this.driver.poll_close(cx) {
             let normal = error.is_h3_no_error();
@@ -90,6 +87,7 @@ impl<Q: quic::Connection<Bytes>> Future for ConnTask<Q> {
             };
             return this.finish(result);
         }
+
         if this.shared.peer_extended_connect.get().is_none() {
             // Borrowed settings come from the received SETTINGS frame; Owned
             // values are protocol defaults before peer negotiation completes.
@@ -105,9 +103,10 @@ impl<Q: quic::Connection<Bytes>> Future for ConnTask<Q> {
                 this.shared.settings_ready.cancel();
             }
         }
+
         #[cfg(feature = "http3-datagram")]
         if let Some(datagrams) = &mut this.datagrams {
-            if let Poll::Ready(result) = datagrams.poll(cx) {
+            if let Poll::Ready(result) = datagrams.as_mut().poll(cx) {
                 this.datagrams = None;
                 if let Err((code, error)) = result {
                     // Publish the cause before transport close wakes exchanges.
@@ -125,9 +124,11 @@ impl<Q: quic::Connection<Bytes>> Future for ConnTask<Q> {
                 }
             }
         }
+
         if ConnectionState::is_closing(&this.driver) {
             this.shared.shutdown();
         }
+
         // The waker is registered above, so a completion racing this check
         // still wakes the task.
         if this.shared.is_closed() && this.shared.is_idle() {
