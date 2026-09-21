@@ -20,6 +20,8 @@ struct Jobs(Arc<Queue>);
 struct Queue {
     jobs: Mutex<Vec<BoxFuture<'static, ()>>>,
     waker: AtomicWaker,
+    /// Queue the connection task too, so a test drives it in lockstep.
+    inline_task: bool,
 }
 
 #[derive(Clone)]
@@ -31,6 +33,13 @@ struct Transport<T> {
 // ===== impl Jobs =====
 
 impl Jobs {
+    fn inline_task() -> Self {
+        Self(Arc::new(Queue {
+            inline_task: true,
+            ..Queue::default()
+        }))
+    }
+
     fn poll(&self, cx: &mut Context<'_>) {
         self.0.waker.register(cx.waker());
         self.0
@@ -45,6 +54,20 @@ impl Executor<BoxFuture<'static, ()>> for Jobs {
     fn execute(&self, job: BoxFuture<'static, ()>) {
         self.0.jobs.lock().unwrap().push(job);
         self.0.waker.wake();
+    }
+}
+
+impl<Q> Executor<ConnTask<Q>> for Jobs
+where
+    Q: rt::Connection<Bytes>,
+    ConnTask<Q>: Future<Output = ()> + Send + 'static,
+{
+    fn execute(&self, task: ConnTask<Q>) {
+        if self.0.inline_task {
+            Executor::<BoxFuture<'static, ()>>::execute(self, Box::pin(task));
+        } else {
+            tokio::spawn(task);
+        }
     }
 }
 
@@ -247,7 +270,7 @@ async fn late_datagram_after_response_drop_preserves_upload() {
         let (client, server, _endpoints) = quic_pair(server_config, client_config).await;
         let observed = client.clone();
         let peer = server.clone();
-        let jobs = Jobs::default();
+        let jobs = Jobs::inline_task();
         let ((mut tx, mut driver), mut server) = tokio::join!(
             async {
                 Builder::new(jobs.clone())

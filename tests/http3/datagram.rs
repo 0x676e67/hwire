@@ -12,7 +12,7 @@ async fn dropping_rejected_connect_body_preserves_next_datagram_session() {
             mut server,
             server_quic,
             _endpoints,
-        } = pair_config::<ClientBody, _>(
+        } = pair_config(
             Http3Options::builder().max_concurrent_requests(1).build(),
             Exec,
             true,
@@ -113,7 +113,7 @@ async fn control_fin_closes_only_its_datagram_direction() {
                 mut server,
                 server_quic,
                 _endpoints,
-            } = pair_config::<ClientBody, _>(
+            } = pair_config(
                 Http3Options::builder().max_concurrent_requests(1).build(),
                 Exec,
                 true,
@@ -231,7 +231,7 @@ async fn control_reset_wakes_datagrams_and_releases_request() {
             mut server,
             _endpoints,
             ..
-        } = pair_config::<ClientBody, _>(
+        } = pair_config(
             Http3Options::builder().max_concurrent_requests(1).build(),
             Exec,
             true,

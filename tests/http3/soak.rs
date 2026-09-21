@@ -92,9 +92,7 @@ async fn cancellation_and_close() {
         async {
             wreq_proto::conn::http3::Builder::new(exec.clone())
                 .options(Http3Options::builder().send_grease(false).build())
-                .handshake::<_, super::ClientBody>(crate::native::Connection::new(
-                    client_quic.clone(),
-                ))
+                .handshake(crate::native::Connection::new(client_quic.clone()))
                 .await
                 .unwrap()
         },

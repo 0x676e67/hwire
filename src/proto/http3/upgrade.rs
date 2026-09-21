@@ -1,59 +1,87 @@
+//! CONNECT tunnels over HTTP/3 request streams.
+
 #[cfg(feature = "http3-datagram")]
 use std::sync::Arc;
 use std::{
     future::{poll_fn, Future},
     io,
-    pin::Pin,
+    pin::{pin, Pin},
     task::{ready, Context, Poll},
 };
 
 use bytes::{Buf, Bytes};
-use futures_util::{future::try_join, TryFutureExt};
+use futures_util::future::{try_join, BoxFuture};
 use http::Response;
 use http3::quic;
-use http_body::Body;
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
     sync::{mpsc, oneshot},
 };
-use tokio_util::sync::PollSender;
+use tokio_util::sync::{CancellationToken, PollSender};
 
-use super::client::{cooperate, BodyGuard, Failure, RecvGuard, ResponseGuard, SendGuard, CHUNK};
-use crate::{body::Incoming, Error, Result};
+#[cfg(feature = "http3-datagram")]
+use super::datagram::{Registration, RequestState};
+use super::{
+    client::{cooperate, invalid_datagram, RecvGuard, SendGuard, CHUNK},
+    shared::Active,
+};
+#[cfg(feature = "http3-datagram")]
+use crate::conn::http3::datagram::Pending;
+use crate::{
+    body::{chan, Incoming},
+    rt::Executor,
+    upgrade::{pending, Upgraded},
+    Error, Result,
+};
 
+/// Write commands from the tunnel to its pump task; acknowledgments carry
+/// the transport result back.
 enum Write {
     Data(Bytes),
     Flush(oneshot::Sender<Result<()>>),
     Finish(oneshot::Sender<Result<()>>),
 }
 
+/// Tunnel I/O handed to the application through `Upgraded`. Reads drain the
+/// pump task's channel; writes are forwarded to it one chunk at a time.
 struct Io {
-    incoming: Incoming,
+    rx: chan::Receiver,
     data: Bytes,
     sender: PollSender<Write>,
     pending: Option<(bool, oneshot::Receiver<Result<()>>)>,
     shutdown: bool,
     read_closed: bool,
     #[cfg(feature = "http3-datagram")]
-    datagrams: Option<Arc<super::datagram::RequestState>>,
+    datagrams: Option<Arc<RequestState>>,
 }
 
-pub(super) async fn run<S, R, B>(
+/// Turns a successful CONNECT into an upgraded tunnel. Both stream directions
+/// move to an executor task that reads eagerly, so peer resets surface even
+/// while the tunnel is idle.
+pub(super) fn tunnel<S, R, E>(
     send: SendGuard<S>,
     recv: RecvGuard<R>,
     mut headers: Response<()>,
-    response: &mut ResponseGuard<'_, B>,
-    failure: &Failure,
-    #[cfg(feature = "http3-datagram")] datagrams: Option<Arc<super::datagram::RequestState>>,
-) -> Result<()>
+    active: Active,
+    #[cfg(feature = "http3-datagram")] registration: Option<Registration>,
+    #[cfg(feature = "http3-datagram")] datagrams: Option<Arc<RequestState>>,
+    exec: &E,
+) -> Response<Incoming>
 where
-    S: quic::SendStream<Bytes>,
-    R: quic::RecvStream,
+    S: quic::SendStream<Bytes> + Send + 'static,
+    R: quic::RecvStream + Send + 'static,
+    E: Executor<BoxFuture<'static, ()>>,
 {
-    let (sender, incoming) = Incoming::h3(crate::body::DecodedLength::CHUNKED);
-    let (tx, rx) = mpsc::channel(1);
+    #[cfg(feature = "http3-datagram")]
+    let invalid = registration
+        .as_ref()
+        .map(|registration| registration.0.invalid.clone());
+    #[cfg(not(feature = "http3-datagram"))]
+    let invalid: Option<CancellationToken> = None;
+    let (body, rx) = chan::channel(false);
+    let (tx, writes) = mpsc::channel(1);
     let io = Io {
-        incoming,
+        rx,
         data: Bytes::new(),
         sender: PollSender::new(tx),
         pending: None,
@@ -62,13 +90,11 @@ where
         #[cfg(feature = "http3-datagram")]
         datagrams: datagrams.clone(),
     };
-    let (pending, on_upgrade) = crate::upgrade::pending();
-    let io = crate::upgrade::Upgraded::new(io, Bytes::new());
+    let (pending, on_upgrade) = pending();
+    let io = Upgraded::new(io, Bytes::new());
     #[cfg(feature = "http3-datagram")]
     let io = if let Some(datagrams) = datagrams {
-        headers
-            .extensions_mut()
-            .insert(crate::conn::http3::datagram::Pending::new(io, datagrams));
+        headers.extensions_mut().insert(Pending::new(io, datagrams));
         None
     } else {
         Some(io)
@@ -79,27 +105,57 @@ where
         headers.extensions_mut().insert(on_upgrade);
     }
     *headers.version_mut() = http::Version::HTTP_3;
-    let Some(callback) = response.callback.take() else {
-        return Err(Error::new_canceled());
-    };
-    callback
-        .try_send(Ok(headers.map(|()| Incoming::empty())))
-        .map_err(|_| Error::new_canceled())?;
+    exec.execute(Box::pin(run(
+        send,
+        recv,
+        body,
+        writes,
+        active,
+        invalid,
+        #[cfg(feature = "http3-datagram")]
+        registration,
+    )));
     if let Some(io) = io {
         pending.fulfill(io);
     }
-    let body = BodyGuard {
-        sender: Some(sender),
-        failure,
-    };
-    let write = upload(send, rx).map_err(|error| {
-        failure.set(error);
-        failure.get()
-    });
-    let read = download(recv, body);
-    try_join(write, read).await.map(|_| ())
+    headers.map(|()| Incoming::empty())
 }
 
+/// Pumps both directions until the tunnel closes or fails, then reports the
+/// failure to the reader.
+async fn run<S, R>(
+    send: SendGuard<S>,
+    recv: RecvGuard<R>,
+    body: chan::Sender,
+    writes: mpsc::Receiver<Write>,
+    active: Active,
+    invalid: Option<CancellationToken>,
+    #[cfg(feature = "http3-datagram")] registration: Option<Registration>,
+) where
+    S: quic::SendStream<Bytes>,
+    R: quic::RecvStream,
+{
+    let mut body = Some(body);
+    let result = {
+        let mut invalid_watch = pin!(invalid_datagram(invalid));
+        let mut transfer = pin!(try_join(upload(send, writes), download(recv, &mut body)));
+        poll_fn(|cx| {
+            if let Poll::Ready(error) = invalid_watch.as_mut().poll(cx) {
+                return Poll::Ready(Err(error));
+            }
+            transfer.as_mut().poll(cx)
+        })
+        .await
+    };
+    if let (Err(error), Some(mut body)) = (result, body) {
+        body.send_error(active.shared().error_or(error));
+    }
+    #[cfg(feature = "http3-datagram")]
+    drop(registration);
+    drop(active);
+}
+
+/// Writes tunnel data until the application shuts down or the peer stops.
 async fn upload<S: quic::SendStream<Bytes>>(
     mut send: SendGuard<S>,
     mut rx: mpsc::Receiver<Write>,
@@ -149,53 +205,47 @@ async fn upload<S: quic::SendStream<Bytes>>(
     }
 }
 
+/// Forwards received data to the tunnel reader and closes it at FIN.
 async fn download<R: quic::RecvStream>(
     mut recv: RecvGuard<R>,
-    mut body: BodyGuard<'_>,
+    body: &mut Option<chan::Sender>,
 ) -> Result<()> {
-    let Some(sender) = body.sender.as_mut() else {
+    let Some(sender) = body.as_mut() else {
         return Err(Error::new_canceled());
     };
-    let transfer = async {
-        let mut budget = 0;
-        while let Some(mut data) = poll_fn(|cx| {
-            if sender.poll_closed(cx).is_ready() {
-                return Poll::Ready(Err(Error::new_canceled()));
-            }
-            recv.stream.poll_recv_data(cx).map_err(Error::new_h3)
-        })
-        .await?
-        {
-            while data.has_remaining() {
-                poll_fn(|cx| sender.poll_ready(cx)).await?;
-                let size = data.remaining().min(CHUNK);
-                sender
-                    .send_data(data.copy_to_bytes(size))
-                    .map_err(|_| Error::new_canceled())?;
-                cooperate(&mut budget).await;
-            }
+    let mut budget = 0;
+    while let Some(mut data) = poll_fn(|cx| {
+        if sender.poll_closed(cx).is_ready() {
+            return Poll::Ready(Err(Error::new_canceled()));
+        }
+        recv.stream.poll_recv_data(cx).map_err(Error::new_h3)
+    })
+    .await?
+    {
+        while data.has_remaining() {
+            poll_fn(|cx| sender.poll_ready(cx)).await?;
+            let size = data.remaining().min(CHUNK);
+            sender
+                .send_data(data.copy_to_bytes(size))
+                .map_err(|_| Error::new_canceled())?;
             cooperate(&mut budget).await;
         }
-        poll_fn(|cx| {
-            if sender.poll_closed(cx).is_ready() {
-                return Poll::Ready(Err(Error::new_canceled()));
-            }
-            recv.stream.poll_recv_trailers(cx).map_err(Error::new_h3)
-        })
-        .await?;
-        recv.finished = true;
-        #[cfg(feature = "http3-datagram")]
-        if let Some(datagrams) = &recv.datagrams {
-            datagrams.close_recv();
-        }
-        Ok(())
-    };
-    let result = transfer.await;
-    if let Err(error) = result {
-        body.failure.set(error);
-        return Err(body.failure.get());
+        cooperate(&mut budget).await;
     }
-    body.sender.take();
+    poll_fn(|cx| {
+        if sender.poll_closed(cx).is_ready() {
+            return Poll::Ready(Err(Error::new_canceled()));
+        }
+        recv.stream.poll_recv_trailers(cx).map_err(Error::new_h3)
+    })
+    .await?;
+    recv.finished = true;
+    #[cfg(feature = "http3-datagram")]
+    if let Some(datagrams) = &recv.datagrams {
+        datagrams.close_recv();
+    }
+    // Dropping the sender delivers EOF to the tunnel reader.
+    body.take();
     Ok(())
 }
 
@@ -261,12 +311,8 @@ impl AsyncRead for Io {
             if self.read_closed {
                 return Poll::Ready(Ok(()));
             }
-            match ready!(Pin::new(&mut self.incoming).poll_frame(cx)) {
-                Some(Ok(frame)) => {
-                    if let Ok(data) = frame.into_data() {
-                        self.data = data;
-                    }
-                }
+            match ready!(self.rx.poll_next(cx)) {
+                Some(Ok(data)) => self.data = data,
                 Some(Err(error)) => {
                     self.read_closed = true;
                     return Poll::Ready(Err(io::Error::other(error)));

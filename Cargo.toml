@@ -24,7 +24,7 @@ default = []
 full = ["tracing", "http3", "http3-datagram"]
 
 # HTTP/3 over an externally established QUIC connection.
-http3 = ["dep:http3"]
+http3 = ["dep:http3", "dep:http-body-util"]
 http3-datagram = ["http3", "dep:http3-datagram"]
 
 # Enable tracing logging.
@@ -36,6 +36,7 @@ http = "1.4.0"
 http2 = { version = "0.5.16", features = ["unstable"] }
 httparse = "1.10.1"
 http-body = "1.0.1"
+http-body-util = { version = "0.1.3", optional = true }
 want = "0.3.1"
 pin-project-lite = "0.2.17"
 futures-channel = "0.3.32"

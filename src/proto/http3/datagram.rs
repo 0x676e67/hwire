@@ -1,12 +1,17 @@
 use std::{
+    any::Any,
     collections::{BTreeMap, VecDeque},
-    sync::{Arc, Mutex, MutexGuard, Weak},
+    mem,
+    sync::{Arc, Mutex, MutexGuard, OnceLock, Weak},
     task::{Context, Poll},
 };
 
 use bytes::{Buf, Bytes};
 use futures_util::task::AtomicWaker;
-use http3::{error::Code, quic::StreamId};
+use http3::{
+    error::{Code, ConnectionError},
+    quic::StreamId,
+};
 use http3_datagram::datagram::Datagram;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
@@ -50,6 +55,10 @@ pub(crate) struct RequestState {
     registry: Arc<Registry>,
     pub(crate) invalid: CancellationToken,
     received: AtomicWaker,
+    /// Response body to stop when a Datagram invalidates the request, erased
+    /// together with the function that knows its concrete type.
+    stop_state: OnceLock<Weak<dyn Any + Send + Sync>>,
+    stop: OnceLock<fn(&(dyn Any + Send + Sync))>,
 }
 
 pub(crate) struct Registration(pub(crate) Arc<RequestState>);
@@ -123,6 +132,8 @@ impl Registry {
             registry: self.clone(),
             invalid,
             received: AtomicWaker::new(),
+            stop_state: OnceLock::new(),
+            stop: OnceLock::new(),
         });
         let mut state = self.lock();
         if !state.closed {
@@ -154,7 +165,7 @@ impl Registry {
             state.incoming = 0;
             state.outgoing = 0;
             state.ready.clear();
-            std::mem::take(&mut state.streams)
+            mem::take(&mut state.streams)
         };
         for entry in entries.into_values() {
             if let Some(request) = entry.request.upgrade() {
@@ -167,7 +178,7 @@ impl Registry {
 
     fn receive(&self, packet: Bytes) -> Result<()> {
         let packet = Datagram::decode(packet).map_err(|error| {
-            Error::new_h3(http3::error::ConnectionError::Local {
+            Error::new_h3(ConnectionError::Local {
                 error: error.into(),
             })
         })?;
@@ -188,6 +199,11 @@ impl Registry {
             // An active request without Datagram semantics is a stream error,
             // unlike an unknown stream (RFC 9297 §2).
             request.invalid.cancel();
+            if let Some((state, stop)) = request.stop_state.get().zip(request.stop.get()) {
+                if let Some(state) = state.upgrade() {
+                    stop(&*state);
+                }
+            }
             return Ok(());
         }
         let payload = packet.into_payload();
@@ -316,6 +332,19 @@ impl RequestState {
         } else {
             Poll::Pending
         }
+    }
+
+    /// Registers the response body an invalid Datagram must stop; `stop`
+    /// downcasts the erased state back to its concrete type.
+    pub(crate) fn attach<T: Any + Send + Sync>(
+        &self,
+        state: Weak<T>,
+        stop: fn(&(dyn Any + Send + Sync)),
+    ) {
+        // The function is visible before the state, so a reader never sees
+        // a state without its downcast.
+        let _ = self.stop.set(stop);
+        let _ = self.stop_state.set(state);
     }
 
     pub(crate) fn close_send(&self) {

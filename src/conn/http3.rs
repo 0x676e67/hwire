@@ -4,55 +4,86 @@
 pub mod datagram;
 
 use std::{
-    borrow::Cow,
     future::{poll_fn, Future},
+    marker::PhantomData,
     pin::Pin,
-    sync::{atomic::Ordering, Arc},
+    sync::{atomic::Ordering, Arc, Mutex, PoisonError},
     task::{ready, Context, Poll},
 };
 
 use bytes::Bytes;
 use futures_util::future::BoxFuture;
 use http::{Request, Response};
-use http3::{error::Code, ConnectionState};
+use http3::error::Code;
 use http_body::Body;
+use tokio::sync::oneshot;
 
+#[cfg(feature = "http3-datagram")]
+use crate::proto::http3::datagram::{Drive, Registry};
+pub use crate::proto::http3::driver::ConnTask;
 use crate::{
     body::Incoming,
-    dispatch::{self, TrySendError},
+    dispatch::TrySendError,
     error::BoxError,
     proto::http3::{
         client,
-        dispatch::{Active, Shared},
+        shared::{Active, Shared},
         transport::Transport,
         Http3Options,
     },
-    rt::{quic, Executor},
+    rt::{bounds::Http3ClientConnExec, quic, Executor},
     Error, Result,
 };
 
-/// The sender side of an established connection.
-pub struct SendRequest<B> {
-    dispatch: dispatch::UnboundedSender<Request<B>, Response<Incoming>>,
+type ExchangeFuture<B> = BoxFuture<'static, Result<Response<Incoming>, TrySendError<Request<B>>>>;
+
+/// Starts requests on the connection. Erasing the QUIC backend and executor
+/// here keeps handles at `SendRequest<B>`, like the HTTP/1 and HTTP/2 ones.
+trait Exchange<B>: Send {
+    fn call(&mut self, request: Request<B>, reservation: Option<Active>) -> ExchangeFuture<B>;
+
+    fn clone_box(&self) -> Box<dyn Exchange<B>>;
 }
 
-/// Drives control streams and request dispatch until the connection closes.
-/// Dropping it terminates the QUIC connection and all outstanding exchanges.
-#[must_use = "connections must be polled to make progress"]
-pub struct Connection<Q: quic::Connection<Bytes>, B, E> {
-    #[cfg(feature = "http3-datagram")]
-    datagrams: Option<Box<dyn crate::proto::http3::datagram::Drive>>,
-    driver: Box<http3::client::Connection<Transport<Q>, Bytes>>,
-    sender: http3::client::SendRequest<Transport<Q::OpenStreams>, Bytes>,
-    opener: Q::OpenStreams,
-    rx: dispatch::Receiver<Request<B>, Response<Incoming>>,
-    shared: Arc<Shared>,
+/// The request opener and executor behind a handle; each request future
+/// receives its own clones.
+struct Opener<O: quic::OpenStreams<Bytes>, E> {
+    sender: http3::client::SendRequest<Transport<O>, Bytes>,
     exec: E,
-    active_limit: usize,
-    completed: bool,
+    shared: Arc<Shared>,
 }
 
-/// Configures a single HTTP/3 connection and its request executor.
+/// The sender side of an established connection.
+///
+/// Each request runs inside the future returned by [`Self::try_send_request`].
+/// Only uploads that outlive the response head and CONNECT tunnels are handed
+/// to the executor.
+pub struct SendRequest<B> {
+    /// The lock only makes the handle `Sync` without requiring that of the
+    /// QUIC backend; requests reach the opener through `get_mut` and never
+    /// lock.
+    exchange: Mutex<Box<dyn Exchange<B>>>,
+    shared: Arc<Shared>,
+}
+
+/// Handle to the connection task, which the executor runs like the HTTP/2
+/// connection. It resolves once the task finishes; dropping it closes the
+/// QUIC connection and every outstanding exchange. The body and executor
+/// types are fixed by the handshake.
+#[must_use = "dropping the connection handle closes the connection"]
+pub struct Connection<Q: quic::Connection<Bytes>, B, E> {
+    opener: Q::OpenStreams,
+    shared: Arc<Shared>,
+    done: oneshot::Receiver<Result<()>>,
+    completed: bool,
+    _marker: PhantomData<fn(B, E)>,
+}
+
+/// The opener is only used through `&mut self`, so the handle is `Unpin`
+/// whatever the backend is.
+impl<Q: quic::Connection<Bytes>, B, E> Unpin for Connection<Q, B, E> {}
+
+/// Configures a single HTTP/3 connection and its executor.
 #[derive(Clone)]
 pub struct Builder<E> {
     exec: E,
@@ -65,8 +96,24 @@ struct Opening<O: quic::OpenStreams<Bytes>>(Option<O>);
 
 impl<B> Clone for SendRequest<B> {
     fn clone(&self) -> Self {
+        self.shared.senders.fetch_add(1, Ordering::AcqRel);
+        let exchange = self
+            .exchange
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone_box();
         Self {
-            dispatch: self.dispatch.clone(),
+            exchange: Mutex::new(exchange),
+            shared: self.shared.clone(),
+        }
+    }
+}
+
+impl<B> Drop for SendRequest<B> {
+    fn drop(&mut self) {
+        // The last handle starts the drain, like a closed request queue.
+        if self.shared.senders.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.shared.drain();
         }
     }
 }
@@ -82,59 +129,79 @@ impl<B> SendRequest<B> {
         }
     }
 
-    /// Waits until the dispatcher is ready; see [`Self::poll_ready`].
+    /// Waits until the connection accepts requests; see [`Self::poll_ready`].
     pub async fn ready(&mut self) -> Result<()> {
         poll_fn(|cx| self.poll_ready(cx)).await
     }
 
     /// Returns a readiness hint; the connection may close before a request is sent.
     pub fn is_ready(&self) -> bool {
-        self.dispatch.is_ready()
+        !self.shared.is_closed()
     }
 
     /// Whether the connection no longer accepts new requests.
     pub fn is_closed(&self) -> bool {
-        self.dispatch.is_closed()
+        self.shared.is_closed()
     }
 
-    /// Queues a request, returning it on failures before dispatch starts.
-    /// Dropping the returned future cancels only this request. Keep driving the
-    /// connection and executor to deliver QUIC reset/stop signals to the peer.
-    /// After response handoff, dropping its body stops receiving while an
-    /// unfinished upload can continue.
+    /// Sends a request, returning it on failures before its stream opens.
+    /// The returned future does the work when polled; dropping it cancels only
+    /// this request. Keep the executor running to deliver QUIC reset/stop
+    /// signals to the peer. After response handoff, dropping its body stops
+    /// receiving while an unfinished upload can continue.
     #[allow(clippy::result_large_err)]
     pub fn try_send_request(
         &mut self,
         request: Request<B>,
     ) -> impl Future<Output = Result<Response<Incoming>, TrySendError<Request<B>>>> {
-        let sent = self.dispatch.try_send_cancelable(request);
-        async move {
-            match sent {
-                Ok((response, consumed)) => {
-                    let result = response.await.unwrap_or_else(|_| {
-                        Err(TrySendError {
-                            error: Error::new_canceled(),
-                            message: None,
-                        })
-                    });
-                    // Keep cancellation alive until the caller receives the response,
-                    // even if its body has already reached FIN in the callback.
-                    let _ = consumed.send(());
-                    result
-                }
-                Err(request) => Err(TrySendError {
-                    error: Error::new_canceled().with("connection was not ready"),
-                    message: Some(request),
-                }),
-            }
-        }
+        // Reserve synchronously so a request created before the last handle
+        // drops is still sent, like a queued request.
+        let reservation = (!self.shared.is_closed()).then(|| Active::reserve(&self.shared));
+        self.exchange
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner)
+            .call(request, reservation)
+    }
+}
+
+// ===== impl Opener =====
+
+impl<O, B, E> Exchange<B> for Opener<O, E>
+where
+    O: quic::OpenStreams<Bytes> + Clone + Send + 'static,
+    O::BidiStream: quic::BidiStream<Bytes> + Send + 'static,
+    <O::BidiStream as quic::BidiStream<Bytes>>::SendStream: Send + 'static,
+    <O::BidiStream as quic::BidiStream<Bytes>>::RecvStream: Send + 'static,
+    <<O::BidiStream as quic::BidiStream<Bytes>>::RecvStream as quic::RecvStream>::Buf: Send,
+    B: Body + Send + 'static,
+    B::Data: Send,
+    B::Error: Into<BoxError>,
+    E: Executor<BoxFuture<'static, ()>> + Clone + Send + 'static,
+{
+    fn call(&mut self, request: Request<B>, reservation: Option<Active>) -> ExchangeFuture<B> {
+        Box::pin(client::request(
+            self.sender.clone(),
+            self.exec.clone(),
+            self.shared.clone(),
+            request,
+            reservation,
+        ))
+    }
+
+    fn clone_box(&self) -> Box<dyn Exchange<B>> {
+        Box::new(Self {
+            sender: self.sender.clone(),
+            exec: self.exec.clone(),
+            shared: self.shared.clone(),
+        })
     }
 }
 
 // ===== impl Builder =====
 
 impl<E> Builder<E> {
-    /// Creates a builder using the supplied executor for request exchanges.
+    /// Creates a builder. The executor runs the connection task, and the
+    /// uploads that outlive their response head and CONNECT tunnels.
     pub fn new(exec: E) -> Self {
         Self {
             exec,
@@ -149,19 +216,20 @@ impl<E> Builder<E> {
     }
 
     /// Initializes HTTP/3 over a QUIC connection whose TLS handshake is complete.
-    /// The returned driver must run for requests, SETTINGS and QPACK to progress.
+    /// The connection task is handed to the executor; the returned handle
+    /// resolves when it finishes.
     pub async fn handshake<Q, B>(self, quic: Q) -> Result<(SendRequest<B>, Connection<Q, B, E>)>
     where
         Q: quic::Connection<Bytes>,
         Q::OpenStreams: Clone + Send + 'static,
         Q::BidiStream: quic::BidiStream<Bytes> + Send + 'static,
-        <Q::BidiStream as quic::BidiStream<Bytes>>::SendStream: Send,
-        <Q::BidiStream as quic::BidiStream<Bytes>>::RecvStream: Send,
+        <Q::BidiStream as quic::BidiStream<Bytes>>::SendStream: Send + 'static,
+        <Q::BidiStream as quic::BidiStream<Bytes>>::RecvStream: Send + 'static,
         <<Q::BidiStream as quic::BidiStream<Bytes>>::RecvStream as quic::RecvStream>::Buf: Send,
         B: Body + Send + 'static,
         B::Data: Send,
         B::Error: Into<BoxError>,
-        E: Executor<BoxFuture<'static, ()>>,
+        E: Http3ClientConnExec<Q> + Send + 'static,
     {
         self.handshake_inner(
             quic,
@@ -186,40 +254,37 @@ impl<E> Builder<E> {
         Q::Receiver: Send + 'static,
         Q::OpenStreams: Clone + Send + 'static,
         Q::BidiStream: quic::BidiStream<Bytes> + Send + 'static,
-        <Q::BidiStream as quic::BidiStream<Bytes>>::SendStream: Send,
-        <Q::BidiStream as quic::BidiStream<Bytes>>::RecvStream: Send,
+        <Q::BidiStream as quic::BidiStream<Bytes>>::SendStream: Send + 'static,
+        <Q::BidiStream as quic::BidiStream<Bytes>>::RecvStream: Send + 'static,
         <<Q::BidiStream as quic::BidiStream<Bytes>>::RecvStream as quic::RecvStream>::Buf: Send,
         B: Body + Send + 'static,
         B::Data: Send,
         B::Error: Into<BoxError>,
-        E: Executor<BoxFuture<'static, ()>>,
+        E: Http3ClientConnExec<Q> + Send + 'static,
     {
         let Some((sender, receiver)) = quic.take_datagrams() else {
             return Err(Error::new_h3("QUIC Datagram reader already taken"));
         };
-        let datagrams = crate::proto::http3::datagram::Registry::new(sender, receiver);
+        let datagrams = Registry::new(sender, receiver);
         self.handshake_inner(quic, Some(datagrams)).await
     }
 
     async fn handshake_inner<Q, B>(
         self,
         quic: Q,
-        #[cfg(feature = "http3-datagram")] datagrams: Option<(
-            Arc<crate::proto::http3::datagram::Registry>,
-            Box<dyn crate::proto::http3::datagram::Drive>,
-        )>,
+        #[cfg(feature = "http3-datagram")] datagrams: Option<(Arc<Registry>, Box<dyn Drive>)>,
     ) -> Result<(SendRequest<B>, Connection<Q, B, E>)>
     where
         Q: quic::Connection<Bytes>,
         Q::OpenStreams: Clone + Send + 'static,
         Q::BidiStream: quic::BidiStream<Bytes> + Send + 'static,
-        <Q::BidiStream as quic::BidiStream<Bytes>>::SendStream: Send,
-        <Q::BidiStream as quic::BidiStream<Bytes>>::RecvStream: Send,
+        <Q::BidiStream as quic::BidiStream<Bytes>>::SendStream: Send + 'static,
+        <Q::BidiStream as quic::BidiStream<Bytes>>::RecvStream: Send + 'static,
         <<Q::BidiStream as quic::BidiStream<Bytes>>::RecvStream as quic::RecvStream>::Buf: Send,
         B: Body + Send + 'static,
         B::Data: Send,
         B::Error: Into<BoxError>,
-        E: Executor<BoxFuture<'static, ()>>,
+        E: Http3ClientConnExec<Q> + Send + 'static,
     {
         let opts = self.options;
         if opts.max_concurrent_requests == 0 {
@@ -258,25 +323,38 @@ impl<E> Builder<E> {
         #[cfg(feature = "http3-datagram")]
         let (registry, datagrams) = datagrams.map_or((None, None), |(r, d)| (Some(r), Some(d)));
         let shared = Shared::new(
+            opts.max_concurrent_requests,
             #[cfg(feature = "http3-datagram")]
             registry,
         );
-        let (tx, rx) = dispatch::channel();
+        let opener = opening.0.take().ok_or_else(Error::new_canceled)?;
+        let (done, completion) = oneshot::channel();
+        let task = ConnTask::new(
+            driver,
+            sender.clone(),
+            opener.clone(),
+            #[cfg(feature = "http3-datagram")]
+            datagrams,
+            shared.clone(),
+            done,
+        );
+        self.exec.execute_h3_task(task);
+        let exchange: Box<dyn Exchange<B>> = Box::new(Opener {
+            sender,
+            exec: self.exec,
+            shared: shared.clone(),
+        });
         Ok((
             SendRequest {
-                dispatch: tx.unbound(),
+                exchange: Mutex::new(exchange),
+                shared: shared.clone(),
             },
             Connection {
-                driver: Box::new(driver),
-                sender,
-                opener: opening.0.take().ok_or_else(Error::new_canceled)?,
-                #[cfg(feature = "http3-datagram")]
-                datagrams,
-                rx,
+                opener,
                 shared,
-                exec: self.exec,
-                active_limit: opts.max_concurrent_requests,
+                done: completion,
                 completed: false,
+                _marker: PhantomData,
             },
         ))
     }
@@ -287,40 +365,14 @@ impl<E> Builder<E> {
 impl<Q: quic::Connection<Bytes>, B, E> Connection<Q, B, E> {
     /// Stops admitting requests and waits for existing exchanges to finish.
     /// Accepted upload bytes and FIN must be acknowledged or stopped by the peer.
-    /// This only initiates shutdown. Continue polling; apply a deadline outside.
-    pub fn graceful_shutdown(self: Pin<&mut Self>)
-    where
-        Self: Unpin,
-    {
-        let this = self.get_mut();
-        this.shared.drain();
-        this.cancel_queued();
-    }
-
-    fn cancel_queued(&mut self) {
-        self.rx.close();
-        while let Some((request, callback)) = self.rx.try_recv() {
-            callback.send(Err(TrySendError {
-                error: Error::new_canceled().with("connection closed"),
-                message: Some(request),
-            }));
-        }
+    /// This only initiates shutdown; await the handle, with a deadline applied
+    /// outside, to observe completion.
+    pub fn graceful_shutdown(self: Pin<&mut Self>) {
+        self.get_mut().shared.shutdown();
     }
 }
 
-impl<Q, B, E> Future for Connection<Q, B, E>
-where
-    Q: quic::Connection<Bytes>,
-    Q::OpenStreams: Clone + Send + Unpin + 'static,
-    Q::BidiStream: quic::BidiStream<Bytes> + Send + 'static,
-    <Q::BidiStream as quic::BidiStream<Bytes>>::SendStream: Send,
-    <Q::BidiStream as quic::BidiStream<Bytes>>::RecvStream: Send,
-    <<Q::BidiStream as quic::BidiStream<Bytes>>::RecvStream as quic::RecvStream>::Buf: Send,
-    B: Body + Send + 'static,
-    B::Data: Send,
-    B::Error: Into<BoxError>,
-    E: Executor<BoxFuture<'static, ()>> + Unpin,
-{
+impl<Q: quic::Connection<Bytes>, B, E> Future for Connection<Q, B, E> {
     type Output = Result<()>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -328,100 +380,13 @@ where
         if this.completed {
             return Poll::Ready(Ok(()));
         }
-        this.shared.register(cx);
-        if let Poll::Ready(error) = this.driver.poll_close(cx) {
-            let normal = error.is_h3_no_error();
-            this.shared.terminate(Error::new_h3(error));
-            this.completed = true;
-            this.cancel_queued();
-            return Poll::Ready(if normal {
-                Ok(())
-            } else {
-                Err(this.shared.error())
-            });
-        }
-        if this.shared.peer_extended_connect.get().is_none() {
-            // Borrowed settings come from the received SETTINGS frame; Owned
-            // values are protocol defaults before peer negotiation completes.
-            if let Cow::Borrowed(settings) = this.driver.settings() {
-                #[cfg(feature = "http3-datagram")]
-                if let Some(datagrams) = &this.shared.datagrams {
-                    datagrams.negotiated(settings.enable_datagram());
-                }
-                let _ = this
-                    .shared
-                    .peer_extended_connect
-                    .set(settings.enable_extended_connect());
-                this.shared.settings_ready.cancel();
-            }
-        }
-        #[cfg(feature = "http3-datagram")]
-        if let Some(datagrams) = &mut this.datagrams {
-            if let Poll::Ready(result) = datagrams.poll(cx) {
-                this.datagrams = None;
-                if let Err((code, error)) = result {
-                    // Publish the cause before transport close wakes exchanges.
-                    this.shared.terminate(error);
-                    quic::OpenStreams::close(
-                        &mut this.opener,
-                        code.value(),
-                        b"HTTP Datagram driver failed",
-                    );
-                    this.completed = true;
-                    this.cancel_queued();
-                    return Poll::Ready(Err(this.shared.error()));
-                }
-                if let Some(registry) = &this.shared.datagrams {
-                    registry.close();
-                }
-            }
-        }
-        if ConnectionState::is_closing(this.driver.as_ref()) {
-            this.shared.drain();
-        }
-        if this.shared.draining.load(Ordering::Acquire) {
-            this.cancel_queued();
-            this.shared.active_waker.register(cx.waker());
-            if this.shared.active.load(Ordering::Acquire) == 0 {
-                quic::OpenStreams::close(&mut this.opener, Code::H3_NO_ERROR.value(), b"");
-                this.shared.terminate(Error::new_closed());
-                this.completed = true;
-                return Poll::Ready(Ok(()));
-            }
-            return Poll::Pending;
-        }
-        for _ in 0..32 {
-            if this.shared.active.load(Ordering::Acquire) >= this.active_limit {
-                // Register only while admission needs a completion, then check
-                // again so a completion racing registration cannot be missed.
-                this.shared.active_waker.register(cx.waker());
-                if this.shared.active.load(Ordering::Acquire) >= this.active_limit {
-                    return Poll::Pending;
-                }
-            }
-            match ready!(this.rx.poll_recv(cx)) {
-                Some((request, callback)) => {
-                    if callback.is_canceled() {
-                        continue;
-                    }
-                    this.shared.active.fetch_add(1, Ordering::AcqRel);
-                    let active = Active(this.shared.clone());
-                    this.exec.execute(Box::pin(client::exchange(
-                        this.sender.clone(),
-                        dispatch::Envelope::new(request, callback),
-                        active,
-                    )));
-                }
-                None => {
-                    // All senders are gone and the queue is empty. Buffered
-                    // requests must be dispatched before starting the drain.
-                    this.shared.drain();
-                    return Poll::Pending;
-                }
-            }
-        }
-        cx.waker().wake_by_ref();
-        Poll::Pending
+        let result = ready!(Pin::new(&mut this.done).poll(cx));
+        this.completed = true;
+        Poll::Ready(
+            result.unwrap_or_else(|_| {
+                Err(Error::new_canceled().with("HTTP/3 connection task dropped"))
+            }),
+        )
     }
 }
 
@@ -429,11 +394,11 @@ impl<Q: quic::Connection<Bytes>, B, E> Drop for Connection<Q, B, E> {
     fn drop(&mut self) {
         if !self.completed {
             self.shared
-                .terminate(Error::new_canceled().with("HTTP/3 driver dropped"));
+                .terminate(Error::new_canceled().with("HTTP/3 connection dropped"));
             quic::OpenStreams::close(
                 &mut self.opener,
                 Code::H3_NO_ERROR.value(),
-                b"client driver dropped",
+                b"client connection dropped",
             );
         }
     }

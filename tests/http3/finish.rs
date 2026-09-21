@@ -17,14 +17,13 @@ async fn tunnel_drain_waits_for_upload_fin_ack() {
 async fn check_drain(connect: bool) {
     for graceful in [false, true] {
         bounded(async {
-            type Body = http_body_util::combinators::BoxBody<Bytes, Infallible>;
             let (_, server_config, client_config) = tls::config();
             let (client, server, _endpoints) = quic_pair(server_config, client_config).await;
             let pause = pause::Pause::default();
             pause.hold_finish_ack();
             let ((mut tx, driver), mut server) = tokio::join!(
                 async {
-                    Builder::new(Exec).handshake::<_, Body>(pause.wrap(native::Connection::new(client))).await.unwrap()
+                    Builder::new(Exec).handshake(pause.wrap(native::Connection::new(client))).await.unwrap()
                 },
                 async {
                     h3::server::Connection::<_, Bytes>::new(h3_quinn::Connection::new(server)).await.unwrap()
@@ -99,4 +98,140 @@ async fn check_drain(connect: bool) {
             peer.await.unwrap();
         }).await;
     }
+}
+
+#[tokio::test]
+async fn empty_request_drain_waits_for_fin_ack() {
+    for graceful in [false, true] {
+        bounded(async {
+            let (_, server_config, client_config) = tls::config();
+            let (client, server, _endpoints) = quic_pair(server_config, client_config).await;
+            let pause = pause::Pause::default();
+            pause.hold_finish_ack();
+            let ((mut tx, driver), mut server) = tokio::join!(
+                async {
+                    Builder::new(Exec)
+                        .handshake::<_, ClientBody>(pause.wrap(native::Connection::new(client)))
+                        .await
+                        .unwrap()
+                },
+                async {
+                    h3::server::Connection::<_, Bytes>::new(h3_quinn::Connection::new(server))
+                        .await
+                        .unwrap()
+                },
+            );
+            let (shutdown, requested) = oneshot::channel();
+            let mut drive = tokio::spawn(async move {
+                let mut driver = std::pin::pin!(driver);
+                tokio::select! {
+                    result = &mut driver => return result,
+                    _ = requested => {
+                        if graceful {
+                            driver.as_mut().graceful_shutdown();
+                        }
+                    }
+                }
+                driver.await
+            });
+            let peer = tokio::spawn(async move {
+                let (_, mut stream) = server
+                    .accept()
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .resolve_request()
+                    .await
+                    .unwrap();
+                stream.send_response(Response::new(())).await.unwrap();
+                stream.finish().await.unwrap();
+                let _ = server.accept().await;
+            });
+            let response = tx
+                .try_send_request(
+                    Request::get("https://localhost/")
+                        .body(Full::new(Bytes::new()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert!(response
+                .into_body()
+                .collect()
+                .await
+                .unwrap()
+                .to_bytes()
+                .is_empty());
+            if graceful {
+                shutdown.send(()).unwrap();
+            } else {
+                drop(tx);
+                drop(shutdown);
+            }
+            // The request FIN is sent but not yet acknowledged; the drain must
+            // wait for it even though no upload task exists.
+            tokio::select! {
+                _ = pause.waiting_for_finish_ack() => {},
+                result = &mut drive => panic!("driver closed before FIN acknowledgment: {result:?}"),
+            }
+            assert!(!drive.is_finished());
+            pause.release_finish_ack();
+            drive.await.unwrap().unwrap();
+            peer.await.unwrap();
+        })
+        .await;
+    }
+}
+
+#[tokio::test]
+async fn empty_request_fails_when_its_fin_reports_a_stream_error() {
+    bounded(async {
+        let (_, server_config, client_config) = tls::config();
+        let (client, server, _endpoints) = quic_pair(server_config, client_config).await;
+        let pause = pause::Pause::default();
+        pause.fail_finish_ack();
+        let ((mut tx, driver), mut server) = tokio::join!(
+            async {
+                Builder::new(Exec)
+                    .handshake::<_, ClientBody>(pause.wrap(native::Connection::new(client)))
+                    .await
+                    .unwrap()
+            },
+            async {
+                h3::server::Connection::<_, Bytes>::new(h3_quinn::Connection::new(server))
+                    .await
+                    .unwrap()
+            },
+        );
+        let drive = tokio::spawn(driver);
+        let peer = tokio::spawn(async move {
+            let (_, mut stream) = server
+                .accept()
+                .await
+                .unwrap()
+                .unwrap()
+                .resolve_request()
+                .await
+                .unwrap();
+            stream.send_response(Response::new(())).await.unwrap();
+            stream.finish().await.unwrap();
+            let _ = server.accept().await;
+        });
+        // The head is in, but the FIN acknowledgment reports a stream error:
+        // the request fails instead of yielding a response on a broken stream.
+        let error = tx
+            .try_send_request(
+                Request::get("https://localhost/")
+                    .body(Full::new(Bytes::new()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap_err();
+        assert!(!error.error().is_user());
+        assert!(error.message().is_none());
+        drop(tx);
+        drive.await.unwrap().unwrap();
+        peer.await.unwrap();
+    })
+    .await;
 }
