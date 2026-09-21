@@ -185,11 +185,27 @@ impl<B> SendRequest<B>
 where
     B: Body + 'static,
 {
-    /// Sends a request, returning it on failures before its stream opens.
-    /// The returned future does the work when polled; dropping it cancels only
-    /// this request. Keep the executor running to deliver QUIC reset/stop
-    /// signals to the peer. After response handoff, dropping its body stops
-    /// receiving while an unfinished upload can continue.
+    /// Sends a `Request` on the associated connection.
+    ///
+    /// Returns a future that if successful, yields the `Response`.
+    /// The request progresses when the returned future is polled.
+    ///
+    /// # Errors
+    ///
+    /// If there was an error before opening the request stream, the message
+    /// will be returned as part of this error.
+    ///
+    /// # Cancel safety
+    ///
+    /// Drop the returned future to cancel an in-flight request. If a stream has
+    /// been opened, cancellation aborts its unfinished send and receive directions
+    /// with `H3_REQUEST_CANCELLED`
+    /// ([RFC 9114 §4.1.1](https://www.rfc-editor.org/rfc/rfc9114.html#section-4.1.1)).
+    /// The connection remains usable for other current and subsequent requests.
+    /// Keep the executor and QUIC transport running so cancellation can reach the peer.
+    ///
+    /// After the response is delivered, dropping its body only cancels receiving;
+    /// an unfinished upload can continue independently.
     #[allow(clippy::result_large_err)]
     pub fn try_send_request(
         &mut self,
