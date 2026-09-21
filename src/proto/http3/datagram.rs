@@ -18,7 +18,7 @@ use std::{
 };
 
 use bytes::{Buf, Bytes};
-use futures_util::task::AtomicWaker;
+use futures_util::{future::BoxFuture, task::AtomicWaker};
 use http3::{
     error::{Code, ConnectionError},
     quic::StreamId,
@@ -85,12 +85,11 @@ pub(crate) struct RequestState {
 }
 
 /// Keeps a request registered; dropping it removes the session.
-pub(crate) struct Registration(pub(crate) Arc<RequestState>);
+pub(crate) struct Registration(pub(super) Arc<RequestState>);
 
 /// Moves packets between the QUIC Datagram transport and the registry; the
 /// connection task polls it.
-pub(crate) type Drive =
-    Pin<Box<dyn Future<Output = std::result::Result<(), (Code, Error)>> + Send>>;
+pub(crate) type Drive = BoxFuture<'static, Result<(), (Code, Error)>>;
 
 /// Drives a backend sender and receiver with bounded work per poll.
 struct Driver<S, R> {

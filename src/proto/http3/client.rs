@@ -22,19 +22,17 @@ use http_body::Body;
 use http_body_util::combinators::BoxBody;
 use tokio_util::sync::CancellationToken;
 
-#[cfg(feature = "http3-datagram")]
-use super::datagram::RequestState;
 use super::{
     body::{RecvBody, UploadGuard},
     shared::{Active, Shared},
     upgrade,
 };
-#[cfg(feature = "http3-datagram")]
-use crate::conn::http3::datagram::DatagramRequest;
 use crate::{
     body::Incoming, dispatch::TrySendError, error::BoxError, ext::OnPreserveHeader, proto::headers,
     rt::Executor, Error, Result,
 };
+#[cfg(feature = "http3-datagram")]
+use crate::{conn::http3::datagram::DatagramRequest, proto::http3::datagram::RequestState};
 
 /// Largest chunk handed to the QUIC send half at once.
 pub(super) const CHUNK: usize = 16 * 1024;
@@ -85,8 +83,10 @@ where
             request,
         ));
     };
+
     let connect = request.method() == Method::CONNECT;
     let head = request.method() == Method::HEAD;
+
     #[cfg(feature = "http3-datagram")]
     let datagram_request = request.extensions().get::<DatagramRequest>().is_some();
     #[cfg(feature = "http3-datagram")]
@@ -102,14 +102,17 @@ where
             request,
         ));
     }
+
     if connect && !request.body().is_end_stream() {
         return Err(rejected(Error::new_user_invalid_connect(), request));
     }
+
     headers::strip_connection_headers(request.headers_mut(), true);
     let length = match validate_request(&request) {
         Ok(length) => length,
         Err(error) => return Err(rejected(Error::new_user_invalid_request(error), request)),
     };
+
     if request.extensions().get::<Protocol>().is_some() {
         shared.settings_ready.cancelled().await;
         if !shared
@@ -125,6 +128,7 @@ where
             return Err(rejected(error, request));
         }
     }
+
     let length = if length.is_none() && !connect {
         let size = request.body().size_hint().exact();
         if let Some(size) = size {
@@ -136,20 +140,24 @@ where
     } else {
         length
     };
+
     if request.body().is_end_stream() && length.is_some_and(|n| n != 0) {
         return Err(rejected(
             Error::new_user_body("body shorter than content-length"),
             request,
         ));
     }
+
     let active = match reservation.admit().await {
         Ok(active) => active,
         Err(error) => return Err(rejected(error, request)),
     };
+
     let (mut parts, body) = request.into_parts();
     if let Some(header_sort) = parts.extensions.remove::<OnPreserveHeader>() {
         header_sort.call(&mut parts.headers);
     }
+
     // From here on the request has left the caller, so failures cannot return it.
     let stream = sender
         .send_request(Request::from_parts(parts, ()))
@@ -160,34 +168,40 @@ where
             "QUIC backend returned a non-client request stream ID",
         )));
     }
+
     #[cfg(feature = "http3-datagram")]
     let registration = shared
         .datagrams
         .as_ref()
         .map(|registry| registry.register(stream.id(), datagram_request, CancellationToken::new()));
+
     #[cfg(feature = "http3-datagram")]
-    let datagrams = registration
-        .as_ref()
-        .map(|registration| registration.0.clone());
+    let datagrams = registration.as_ref().map(|registration| &registration.0);
+
     #[cfg(feature = "http3-datagram")]
     let invalid = datagrams.as_ref().map(|state| state.invalid.clone());
+
     #[cfg(not(feature = "http3-datagram"))]
     let invalid: Option<CancellationToken> = None;
+
     let (send, recv) = stream.split();
     let send = SendGuard {
         #[cfg(feature = "http3-datagram")]
-        datagrams: datagrams.clone(),
+        datagrams: datagrams.cloned(),
         stream: send,
         finished: false,
     };
+
     let mut recv = RecvGuard {
         #[cfg(feature = "http3-datagram")]
-        datagrams: datagrams.clone(),
+        datagrams: datagrams.cloned(),
         stream: recv,
         finished: false,
         code: Code::H3_REQUEST_CANCELLED,
     };
+
     let mut invalid_watch = pin!(invalid_datagram(invalid.clone()));
+
     // CONNECT keeps its send direction open for the tunnel, so its head is
     // read before anything is finished.
     let initial_response = if connect {
@@ -203,15 +217,21 @@ where
         }
         .map_err(|error| lost(shared.error_or(error)))?;
         if headers.status().is_success() {
+            #[cfg(feature = "http3-datagram")]
+            let datagrams = match registration {
+                None => upgrade::TunnelDatagrams::Disabled,
+                Some(registration) if datagram_request => {
+                    upgrade::TunnelDatagrams::Datagram(registration)
+                }
+                Some(registration) => upgrade::TunnelDatagrams::Ordinary(registration),
+            };
             return Ok(upgrade::tunnel(
                 send,
                 recv,
                 headers,
                 active,
                 #[cfg(feature = "http3-datagram")]
-                registration,
-                #[cfg(feature = "http3-datagram")]
-                if datagram_request { datagrams } else { None },
+                datagrams,
                 &exec,
             ));
         }
@@ -219,6 +239,7 @@ where
     } else {
         None
     };
+
     // An empty body finishes inline; its FIN acknowledgment is checked once
     // the head is in, so a drain cannot discard an unacknowledged FIN.
     let mut finished = None;
@@ -232,6 +253,7 @@ where
     } else {
         Some(Box::pin(upload(send, body, length)) as BoxFuture<'static, Result<()>>)
     };
+
     let mut headers = match initial_response {
         Some(headers) => headers,
         None => {
@@ -253,6 +275,7 @@ where
             .map_err(|error| lost(shared.error_or(error)))?
         }
     };
+
     let mut remaining = content_length(headers.headers()).map_err(|error| {
         // A malformed response is a stream error, not a local cancellation.
         // https://www.rfc-editor.org/rfc/rfc9114.html#section-4.1.2
@@ -268,6 +291,7 @@ where
         remaining = Some(0);
     }
     *headers.version_mut() = http::Version::HTTP_3;
+
     // The peer's response packet normally carries the acknowledgment of the
     // packet that held HEADERS and FIN; only a late one needs a task.
     if let Some(mut send) = finished.take() {
@@ -291,6 +315,9 @@ where
             }
         }
     }
+
+    #[cfg(feature = "http3-datagram")]
+    let datagrams = datagrams.cloned();
     let body = RecvBody::new(
         recv,
         remaining,
@@ -299,10 +326,12 @@ where
         registration,
         upload.is_some(),
     );
+
     #[cfg(feature = "http3-datagram")]
     if let Some(datagrams) = &datagrams {
         body.attach(datagrams);
     }
+
     if let Some(upload) = upload {
         exec.execute(Box::pin(continue_upload(
             upload,
@@ -310,6 +339,7 @@ where
             invalid,
         )));
     }
+
     Ok(headers.map(|()| Incoming::h3(BoxBody::new(body))))
 }
 

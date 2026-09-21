@@ -39,7 +39,6 @@ fn contract_error(reason: &str) -> http3::quic::StreamErrorIncoming {
 
 impl<B: Buf, Q: quic::Connection<B>> http3::quic::Connection<B> for Transport<Q> {
     type RecvStream = Stream<Q::RecvStream, B>;
-
     type OpenStreams = Transport<Q::OpenStreams>;
 
     fn poll_accept_recv(
@@ -67,7 +66,6 @@ impl<B: Buf, Q: quic::Connection<B>> http3::quic::Connection<B> for Transport<Q>
 
 impl<B: Buf, Q: quic::OpenStreams<B>> http3::quic::OpenStreams<B> for Transport<Q> {
     type SendStream = Stream<Q::SendStream, B>;
-
     type BidiStream = Stream<Q::BidiStream, B>;
 
     fn poll_open_bidi(
@@ -195,7 +193,6 @@ impl<T: quic::RecvStream, B: Buf> http3::quic::RecvStream for Stream<T, B> {
 
 impl<T: quic::BidiStream<B>, B: Buf> http3::quic::BidiStream<B> for Stream<T, B> {
     type SendStream = Stream<T::SendStream, B>;
-
     type RecvStream = Stream<T::RecvStream, B>;
 
     fn split(self) -> (Self::SendStream, Self::RecvStream) {

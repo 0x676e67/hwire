@@ -27,6 +27,7 @@ mod soak;
 mod tls;
 
 use std::{
+    any::TypeId,
     future::Future,
     sync::{
         atomic::{AtomicUsize, Ordering},
@@ -41,7 +42,7 @@ use http::{HeaderMap, Request, Response, Version};
 use http_body_util::{BodyExt, Full};
 use tokio::{sync::oneshot, time::timeout};
 use wreq_proto::{
-    conn::http3::{Builder, ConnTask, Connection, SendRequest},
+    conn::http3::{Builder, Connection, SendRequest},
     http3::Http3Options,
     rt::{bounds::Http3ClientConnExec, Executor},
 };
@@ -774,15 +775,14 @@ async fn extended_connect_requires_peer_permission() {
 #[derive(Clone, Copy)]
 struct Discard;
 
-impl Executor<ConnTask<crate::native::Connection>> for Discard {
-    fn execute(&self, task: ConnTask<crate::native::Connection>) {
-        tokio::spawn(task);
-    }
-}
-
-impl Executor<BoxFuture<'static, ()>> for Discard {
-    fn execute(&self, future: BoxFuture<'static, ()>) {
-        drop(future);
+impl<F: Future<Output = ()> + Send + 'static> Executor<F> for Discard {
+    fn execute(&self, future: F) {
+        // Uploads and tunnels are boxed; the internal connection task is not.
+        if TypeId::of::<F>() == TypeId::of::<BoxFuture<'static, ()>>() {
+            drop(future);
+        } else {
+            tokio::spawn(future);
+        }
     }
 }
 
@@ -791,15 +791,12 @@ impl Executor<BoxFuture<'static, ()>> for Discard {
 #[derive(Clone, Default)]
 struct Aborting(Arc<std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>>);
 
-impl Executor<ConnTask<crate::native::Connection>> for Aborting {
-    fn execute(&self, task: ConnTask<crate::native::Connection>) {
-        tokio::spawn(task);
-    }
-}
-
-impl Executor<BoxFuture<'static, ()>> for Aborting {
-    fn execute(&self, future: BoxFuture<'static, ()>) {
-        self.0.lock().unwrap().push(tokio::spawn(future));
+impl<F: Future<Output = ()> + Send + 'static> Executor<F> for Aborting {
+    fn execute(&self, future: F) {
+        let task = tokio::spawn(future);
+        if TypeId::of::<F>() == TypeId::of::<BoxFuture<'static, ()>>() {
+            self.0.lock().unwrap().push(task);
+        }
     }
 }
 
@@ -1064,6 +1061,19 @@ async fn datagram_sessions_route_by_stream_and_close_with_control() {
 #[cfg(feature = "http3-datagram")]
 #[tokio::test]
 async fn datagram_on_ordinary_request_resets_only_that_stream() {
+    invalid_datagram_on_ordinary_request(false).await;
+}
+
+#[cfg(feature = "http3-datagram")]
+#[tokio::test]
+async fn datagram_on_ordinary_connect_resets_only_that_stream() {
+    invalid_datagram_on_ordinary_request(true).await;
+}
+
+#[cfg(feature = "http3-datagram")]
+async fn invalid_datagram_on_ordinary_request(connect: bool) {
+    use tokio::io::AsyncReadExt;
+
     bounded(async {
         let Pair {
             mut tx,
@@ -1119,17 +1129,28 @@ async fn datagram_on_ordinary_request_resets_only_that_stream() {
             first.await.unwrap();
             second.await.unwrap();
         });
-        let canceled_response = tx
-            .try_send_request(
-                Request::get("https://localhost/ordinary")
-                    .body(Full::new(Bytes::new()))
-                    .unwrap(),
-            )
+        let request = if connect {
+            Request::connect("localhost:443")
+        } else {
+            Request::get("https://localhost/ordinary")
+        };
+        let mut canceled_response = tx
+            .try_send_request(request.body(Full::new(Bytes::new())).unwrap())
             .await
             .unwrap();
+        assert!(wreq_proto::conn::http3::datagram::on(&mut canceled_response).is_none());
+        let tunnel = if connect {
+            Some(
+                wreq_proto::upgrade::on(&mut canceled_response)
+                    .await
+                    .unwrap(),
+            )
+        } else {
+            None
+        };
         send_packet.send(()).unwrap();
         // Cancellation must reach the peer and release admission even when
-        // the application retains the response without ever polling its Body.
+        // the application retains the response body or tunnel without reading it.
         reset_seen.await.unwrap();
         let response = tx
             .try_send_request(
@@ -1146,7 +1167,11 @@ async fn datagram_on_ordinary_request_resets_only_that_stream() {
             .unwrap()
             .to_bytes()
             .is_empty());
-        assert!(canceled_response.into_body().collect().await.is_err());
+        if let Some(mut tunnel) = tunnel {
+            assert!(tunnel.read_to_end(&mut Vec::new()).await.is_err());
+        } else {
+            assert!(canceled_response.into_body().collect().await.is_err());
+        }
         drop(tx);
         client_driver.await.unwrap().unwrap();
         server_task.await.unwrap();

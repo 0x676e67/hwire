@@ -19,19 +19,20 @@ use tokio::{
 };
 use tokio_util::sync::{CancellationToken, PollSender};
 
-#[cfg(feature = "http3-datagram")]
-use super::datagram::{Registration, RequestState};
 use super::{
     client::{cooperate, invalid_datagram, RecvGuard, SendGuard, CHUNK},
     shared::Active,
 };
-#[cfg(feature = "http3-datagram")]
-use crate::conn::http3::datagram::Pending;
 use crate::{
     body::{chan, Incoming},
     rt::Executor,
     upgrade::{pending, Upgraded},
     Error, Result,
+};
+#[cfg(feature = "http3-datagram")]
+use crate::{
+    conn::http3::datagram::Pending,
+    proto::http3::datagram::{Registration, RequestState},
 };
 
 /// Write commands from the tunnel to its pump task; acknowledgments carry
@@ -55,6 +56,14 @@ struct Io {
     datagrams: Option<Arc<RequestState>>,
 }
 
+/// Datagram semantics and the registration owned by a CONNECT tunnel task.
+#[cfg(feature = "http3-datagram")]
+pub(super) enum TunnelDatagrams {
+    Disabled,
+    Ordinary(Registration),
+    Datagram(Registration),
+}
+
 /// Turns a successful CONNECT into an upgraded tunnel. Both stream directions
 /// move to an executor task that reads eagerly, so peer resets surface even
 /// while the tunnel is idle.
@@ -63,8 +72,7 @@ pub(super) fn tunnel<S, R, E>(
     recv: RecvGuard<R>,
     mut headers: Response<()>,
     active: Active,
-    #[cfg(feature = "http3-datagram")] registration: Option<Registration>,
-    #[cfg(feature = "http3-datagram")] datagrams: Option<Arc<RequestState>>,
+    #[cfg(feature = "http3-datagram")] datagrams: TunnelDatagrams,
     exec: &E,
 ) -> Response<Incoming>
 where
@@ -72,6 +80,15 @@ where
     R: quic::RecvStream + Send + 'static,
     E: Executor<BoxFuture<'static, ()>>,
 {
+    #[cfg(feature = "http3-datagram")]
+    let (registration, datagrams) = match datagrams {
+        TunnelDatagrams::Disabled => (None, None),
+        TunnelDatagrams::Ordinary(registration) => (Some(registration), None),
+        TunnelDatagrams::Datagram(registration) => {
+            let state = registration.0.clone();
+            (Some(registration), Some(state))
+        }
+    };
     #[cfg(feature = "http3-datagram")]
     let invalid = registration
         .as_ref()

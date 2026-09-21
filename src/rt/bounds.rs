@@ -92,10 +92,8 @@ mod h3_client {
     /// task, and the boxed uploads and CONNECT tunnels that outlive their
     /// request future. Request futures carry their own clone of it.
     ///
-    /// This trait is implemented for any type that implements [`Executor`]
-    /// trait for any future. Implementing `Executor<ConnTask<Q>>` and
-    /// `Executor<BoxFuture<'static, ()>>` separately lets an executor run the
-    /// connection task differently from the uploads and tunnels.
+    /// This trait is implemented for compatible types that implement
+    /// [`Executor`] for any future.
     ///
     /// This trait is sealed and cannot be implemented for types outside this crate.
     pub trait Http3ClientConnExec<Q>:

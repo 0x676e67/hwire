@@ -50,23 +50,13 @@ impl Jobs {
     }
 }
 
-impl Executor<BoxFuture<'static, ()>> for Jobs {
-    fn execute(&self, job: BoxFuture<'static, ()>) {
-        self.0.jobs.lock().unwrap().push(job);
-        self.0.waker.wake();
-    }
-}
-
-impl<Q> Executor<ConnTask<Q>> for Jobs
-where
-    Q: rt::Connection<Bytes>,
-    ConnTask<Q>: Future<Output = ()> + Send + 'static,
-{
-    fn execute(&self, task: ConnTask<Q>) {
-        if self.0.inline_task {
-            Executor::<BoxFuture<'static, ()>>::execute(self, Box::pin(task));
+impl<F: Future<Output = ()> + Send + 'static> Executor<F> for Jobs {
+    fn execute(&self, job: F) {
+        if self.0.inline_task || TypeId::of::<F>() == TypeId::of::<BoxFuture<'static, ()>>() {
+            self.0.jobs.lock().unwrap().push(Box::pin(job));
+            self.0.waker.wake();
         } else {
-            tokio::spawn(task);
+            tokio::spawn(job);
         }
     }
 }

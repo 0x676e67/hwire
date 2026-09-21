@@ -49,13 +49,13 @@ use tokio::sync::oneshot;
 
 #[cfg(feature = "http3-datagram")]
 use crate::proto::http3::datagram::{Drive, Registry};
-pub use crate::proto::http3::driver::ConnTask;
 use crate::{
     body::Incoming,
     dispatch::TrySendError,
     error::BoxError,
     proto::http3::{
         client,
+        driver::ConnTask,
         shared::{Active, Shared},
         transport::Transport,
         Http3Options,
@@ -325,6 +325,7 @@ impl<E> Builder<E> {
         if opts.max_concurrent_requests == 0 {
             return Err(Error::new_h3("invalid HTTP/3 request capacity"));
         }
+
         #[cfg(feature = "http3-datagram")]
         if datagrams.is_some()
             && opts
@@ -336,6 +337,7 @@ impl<E> Builder<E> {
                 "HTTP Datagram settings order omits H3_DATAGRAM",
             ));
         }
+
         let mut opening = Opening(Some(quic.opener()));
         let mut builder = http3::client::builder();
         builder
@@ -355,6 +357,7 @@ impl<E> Builder<E> {
             .build(Transport(quic))
             .await
             .map_err(Error::new_h3)?;
+
         #[cfg(feature = "http3-datagram")]
         let (registry, datagrams) = datagrams.map_or((None, None), |(r, d)| (Some(r), Some(d)));
         let shared = Shared::new(
@@ -362,6 +365,7 @@ impl<E> Builder<E> {
             #[cfg(feature = "http3-datagram")]
             registry,
         );
+
         let opener = opening.0.take().ok_or_else(Error::new_canceled)?;
         let (done, completion) = oneshot::channel();
         let task = ConnTask::new(
@@ -372,12 +376,15 @@ impl<E> Builder<E> {
             shared.clone(),
             done,
         );
+
         self.exec.execute_h3_task(task);
+
         let exchange: Box<dyn Exchange<B>> = Box::new(Opener {
             sender,
             exec: self.exec,
             shared: shared.clone(),
         });
+
         Ok((
             SendRequest {
                 exchange: Mutex::new(exchange),
