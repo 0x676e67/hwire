@@ -36,10 +36,6 @@ fn main() {
 }
 ```
 
-HTTP/3 lives in `wreq_proto::conn::http3` behind the `http3` feature. The QUIC and
-TLS handshakes are the caller's: the connection is passed in through the
-`wreq_proto::rt::quic` traits, and the connection task runs on the caller's executor.
-
 ## Documentation
 
 - [Protocol API][protocol-api]
