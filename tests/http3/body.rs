@@ -1,6 +1,147 @@
 use super::*;
 
 #[tokio::test]
+async fn graceful_shutdown_returns_connect_waiting_for_settings() {
+    for polled in [false, true] {
+        bounded(async {
+            let (_, server_config, client_config) = tls::config();
+            let (client, server, _endpoints) = quic_pair(server_config, client_config).await;
+            let (mut tx, driver) = Builder::new(Exec)
+                .options(Http3Options::builder().max_concurrent_requests(1).build())
+                .handshake::<_, ClientBody>(native::Connection::new(client))
+                .await
+                .unwrap();
+            let mut driver = Box::pin(driver);
+            let mut active = tokio_test::task::spawn(
+                tx.try_send_request(
+                    Request::get("https://localhost/active")
+                        .body(Full::new(Bytes::new()))
+                        .unwrap(),
+                ),
+            );
+            assert!(active.poll().is_pending());
+            let mut request = Request::connect("https://localhost/connect-udp")
+                .body(Full::new(Bytes::new()))
+                .unwrap();
+            request
+                .extensions_mut()
+                .insert(http3::ext::Protocol::CONNECT_UDP);
+            let mut waiting = tokio_test::task::spawn(tx.try_send_request(request));
+            if polled {
+                assert!(waiting.poll().is_pending());
+            }
+            // Delay the upstream HTTP/3 server's SETTINGS until after shutdown.
+            // The ordinary request occupies the slot and keeps the drain alive.
+            driver.as_mut().graceful_shutdown();
+            if polled {
+                assert!(waiting.is_woken());
+            }
+            let mut error = match waiting.poll() {
+                std::task::Poll::Ready(Err(error)) => error,
+                other => panic!("unsent CONNECT not returned on shutdown: {other:?}"),
+            };
+            assert!(error.error().is_canceled());
+            assert_eq!(error.take_message().unwrap().uri().path(), "/connect-udp");
+            std::future::poll_fn(|cx| {
+                assert!(driver.as_mut().poll(cx).is_pending());
+                std::task::Poll::Ready(())
+            })
+            .await;
+            let mut server = h3::server::builder()
+                .enable_extended_connect(true)
+                .build::<_, Bytes>(h3_quinn::Connection::new(server))
+                .await
+                .unwrap();
+            let peer = tokio::spawn(async move {
+                let (request, mut stream) = server
+                    .accept()
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .resolve_request()
+                    .await
+                    .unwrap();
+                assert_eq!(request.uri().path(), "/active");
+                assert!(stream.recv_data().await.unwrap().is_none());
+                stream.send_response(Response::new(())).await.unwrap();
+                stream
+                    .send_data(Bytes::from_static(b"drained"))
+                    .await
+                    .unwrap();
+                stream.finish().await.unwrap();
+                assert!(server.accept().await.err().unwrap().is_h3_no_error());
+            });
+            let body = active.await.unwrap().into_body().collect().await.unwrap();
+            assert_eq!(body.to_bytes(), "drained");
+            driver.await.unwrap();
+            peer.await.unwrap();
+        })
+        .await;
+    }
+}
+
+#[tokio::test]
+async fn last_sender_drop_preserves_connect_waiting_for_settings() {
+    bounded(async {
+        let (_, server_config, client_config) = tls::config();
+        let (client, server, _endpoints) = quic_pair(server_config, client_config).await;
+        let (mut tx, driver) = Builder::new(Exec)
+            .handshake::<_, ClientBody>(native::Connection::new(client))
+            .await
+            .unwrap();
+        let mut request = Request::connect("https://localhost/connect-udp")
+            .body(Full::new(Bytes::new()))
+            .unwrap();
+        request
+            .extensions_mut()
+            .insert(http3::ext::Protocol::CONNECT_UDP);
+        let mut waiting = tokio_test::task::spawn(tx.try_send_request(request));
+        assert!(waiting.poll().is_pending());
+        drop(tx);
+        assert!(waiting.poll().is_pending());
+        let mut drive = tokio_test::task::spawn(driver);
+        assert!(drive.poll().is_pending());
+        // A last-sender drain must still let this reservation negotiate and run.
+        let mut server = h3::server::builder()
+            .enable_extended_connect(true)
+            .build::<_, Bytes>(h3_quinn::Connection::new(server))
+            .await
+            .unwrap();
+        let peer = tokio::spawn(async move {
+            let (request, mut stream) = server
+                .accept()
+                .await
+                .unwrap()
+                .unwrap()
+                .resolve_request()
+                .await
+                .unwrap();
+            assert_eq!(request.method(), http::Method::CONNECT);
+            assert_eq!(request.uri().path(), "/connect-udp");
+            stream
+                .send_response(Response::builder().status(403).body(()).unwrap())
+                .await
+                .unwrap();
+            stream.finish().await.unwrap();
+            assert!(stream.recv_data().await.unwrap().is_none());
+            assert!(server.accept().await.err().unwrap().is_h3_no_error());
+        });
+        let response = waiting.await.unwrap();
+        assert_eq!(response.status(), 403);
+        assert!(response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .is_empty());
+        drive.await.unwrap();
+        peer.await.unwrap();
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn last_sender_drop_dispatches_queued_requests() {
     for limit in [1, 128] {
         bounded(async {

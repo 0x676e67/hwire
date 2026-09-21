@@ -77,7 +77,7 @@ impl Shared {
         }
     }
 
-    /// Drains and returns requests still waiting for admission. The driver
+    /// Drains and returns requests waiting for SETTINGS or admission. The driver
     /// calls this on every poll while closing, so only a change wakes it.
     pub(crate) fn shutdown(&self) {
         self.drain();
@@ -85,13 +85,14 @@ impl Shared {
             self.permits.close();
             self.waker.wake();
         }
+        // SETTINGS waiters have not entered the admission semaphore yet.
+        self.settings_ready.cancel();
     }
 
     /// Publishes the connection error and fails everything still waiting on it.
     pub(crate) fn terminate(&self, error: Error) {
         self.error.get_or_init(|| Arc::new(error));
         self.shutdown();
-        self.settings_ready.cancel();
         #[cfg(feature = "http3-datagram")]
         if let Some(datagrams) = &self.datagrams {
             datagrams.close();
