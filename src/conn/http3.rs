@@ -103,7 +103,13 @@ pub struct SendRequest<B> {
 /// QUIC connection and every outstanding exchange. The body and executor
 /// types are fixed by the handshake.
 #[must_use = "dropping the connection handle closes the connection"]
-pub struct Connection<Q: quic::Connection<Bytes>, B, E> {
+pub struct Connection<Q, B, E>
+where
+    Q: quic::Connection<Bytes>,
+    B: Body + 'static,
+    E: Http3ClientConnExec<Q>,
+    B::Error: Into<BoxError>,
+{
     opener: Q::OpenStreams,
     shared: Arc<Shared>,
     done: oneshot::Receiver<Result<()>>,
@@ -113,7 +119,14 @@ pub struct Connection<Q: quic::Connection<Bytes>, B, E> {
 
 /// The opener is only used through `&mut self`, so the handle is `Unpin`
 /// whatever the backend is.
-impl<Q: quic::Connection<Bytes>, B, E> Unpin for Connection<Q, B, E> {}
+impl<Q, B, E> Unpin for Connection<Q, B, E>
+where
+    Q: quic::Connection<Bytes>,
+    B: Body + 'static,
+    E: Http3ClientConnExec<Q>,
+    B::Error: Into<BoxError>,
+{
+}
 
 /// Configures a single HTTP/3 connection and its executor.
 #[derive(Clone)]
@@ -403,7 +416,13 @@ impl<E> Builder<E> {
 
 // ===== impl Connection =====
 
-impl<Q: quic::Connection<Bytes>, B, E> Connection<Q, B, E> {
+impl<Q, B, E> Connection<Q, B, E>
+where
+    Q: quic::Connection<Bytes>,
+    B: Body + 'static,
+    E: Http3ClientConnExec<Q>,
+    B::Error: Into<BoxError>,
+{
     /// Stops admitting requests and waits for existing exchanges to finish.
     /// Accepted upload bytes and FIN must be acknowledged or stopped by the peer.
     /// This only initiates shutdown; await the handle, with a deadline applied
@@ -413,7 +432,13 @@ impl<Q: quic::Connection<Bytes>, B, E> Connection<Q, B, E> {
     }
 }
 
-impl<Q: quic::Connection<Bytes>, B, E> Future for Connection<Q, B, E> {
+impl<Q, B, E> Future for Connection<Q, B, E>
+where
+    Q: quic::Connection<Bytes>,
+    B: Body + 'static,
+    E: Http3ClientConnExec<Q>,
+    B::Error: Into<BoxError>,
+{
     type Output = Result<()>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -431,7 +456,13 @@ impl<Q: quic::Connection<Bytes>, B, E> Future for Connection<Q, B, E> {
     }
 }
 
-impl<Q: quic::Connection<Bytes>, B, E> Drop for Connection<Q, B, E> {
+impl<Q, B, E> Drop for Connection<Q, B, E>
+where
+    Q: quic::Connection<Bytes>,
+    B: Body + 'static,
+    E: Http3ClientConnExec<Q>,
+    B::Error: Into<BoxError>,
+{
     fn drop(&mut self) {
         if !self.completed {
             self.shared

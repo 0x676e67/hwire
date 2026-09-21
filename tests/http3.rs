@@ -78,7 +78,12 @@ type Server = h3::server::Connection<h3_quinn::Connection, Bytes>;
 
 type ClientBody = Full<Bytes>;
 
-struct Pair<B = ClientBody, E = Exec> {
+struct Pair<B = ClientBody, E = Exec>
+where
+    B: http_body::Body + 'static,
+    E: Http3ClientConnExec<crate::native::Connection>,
+    B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+{
     tx: SendRequest<B>,
     driver: Connection<crate::native::Connection, B, E>,
     server: Server,
