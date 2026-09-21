@@ -249,6 +249,7 @@ async fn download<R: quic::RecvStream>(
     Ok(())
 }
 
+/// The error a closed tunnel reports to the application.
 fn closed() -> io::Error {
     io::Error::new(io::ErrorKind::BrokenPipe, "HTTP/3 tunnel closed")
 }
@@ -256,6 +257,7 @@ fn closed() -> io::Error {
 // ===== impl Io =====
 
 impl Io {
+    /// Waits for the pump task to acknowledge the pending flush or finish.
     fn poll_ack(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         if let Some((finish, ack)) = self.pending.as_mut() {
             let result = ready!(Pin::new(ack).poll(cx));
@@ -267,6 +269,8 @@ impl Io {
         Poll::Ready(Ok(()))
     }
 
+    /// Sends a flush or finish to the pump task and waits for its acknowledgment;
+    /// a finish requested behind a pending flush follows once that flush completes.
     fn poll_barrier(&mut self, cx: &mut Context<'_>, finish: bool) -> Poll<io::Result<()>> {
         if self.pending.is_some() {
             let pending_finish = self.pending.as_ref().is_some_and(|(finish, _)| *finish);

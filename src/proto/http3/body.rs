@@ -240,6 +240,8 @@ impl<S: quic::RecvStream> Link<S> {
 // ===== impl State =====
 
 impl<S: quic::RecvStream> State<S> {
+    /// Reads the next frame under the lock; a failure finishes the stream and
+    /// reports the error, preferring a published connection error.
     fn poll_frame(
         &mut self,
         cx: &mut Context<'_>,

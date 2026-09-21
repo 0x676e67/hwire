@@ -41,6 +41,8 @@ impl<Q: quic::Connection<Bytes>> Unpin for ConnTask<Q> {}
 // ===== impl ConnTask =====
 
 impl<Q: quic::Connection<Bytes>> ConnTask<Q> {
+    /// Wraps the protocol driver and the Datagram driver; `done` reports the
+    /// outcome to the handle.
     pub(crate) fn new(
         driver: http3::client::Connection<Transport<Q>, Bytes>,
         sender: http3::client::SendRequest<Transport<Q::OpenStreams>, Bytes>,

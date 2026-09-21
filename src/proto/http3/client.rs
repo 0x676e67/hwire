@@ -36,6 +36,7 @@ use crate::{
     rt::Executor, Error, Result,
 };
 
+/// Largest chunk handed to the QUIC send half at once.
 pub(super) const CHUNK: usize = 16 * 1024;
 
 /// Send half of a request stream. Dropping it before `finished` resets the

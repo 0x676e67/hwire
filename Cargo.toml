@@ -25,6 +25,7 @@ full = ["tracing", "http3", "http3-datagram"]
 
 # HTTP/3 over an externally established QUIC connection.
 http3 = ["dep:http3", "dep:http-body-util"]
+# HTTP Datagram sessions (RFC 9297) on HTTP/3 connections.
 http3-datagram = ["http3", "dep:http3-datagram"]
 
 # Enable tracing logging.

@@ -1,3 +1,12 @@
+//! Routes HTTP Datagrams between one QUIC connection and its request streams.
+//!
+//! The [`Registry`] keys every registered request by its Quarter Stream ID and
+//! keeps bounded send and receive queues per session and per connection; the
+//! newest packet is dropped when a queue is full, since Datagrams are
+//! unreliable. A Datagram for a registered request without Datagram semantics
+//! is a stream error, one for an unknown or closed stream is ignored.
+//! <https://www.rfc-editor.org/rfc/rfc9297.html>
+
 use std::{
     any::Any,
     collections::{BTreeMap, VecDeque},
@@ -18,16 +27,24 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{rt::quic, Error, Result};
 
+/// Packets queued per session and direction. The limits are also stated on
+/// `conn::http3::datagram::Sender::try_send`.
 const PACKETS: usize = 64;
+/// Bytes queued per session and direction.
 const SESSION_BYTES: usize = 128 * 1024;
+/// Bytes queued per connection and direction.
 const CONNECTION_BYTES: usize = 1024 * 1024;
 
+/// Per-connection Datagram state shared by the driver, the request handles and
+/// the response bodies.
 pub(crate) struct Registry {
     state: Mutex<State>,
     waker: AtomicWaker,
     capacity: Arc<Notify>,
 }
 
+/// Registry state under its lock: sessions by Quarter Stream ID, the send
+/// round robin and the byte budgets.
 #[derive(Default)]
 struct State {
     streams: BTreeMap<u64, Entry>,
@@ -39,6 +56,8 @@ struct State {
     closed: bool,
 }
 
+/// One registered request stream: whether it has Datagram semantics, which
+/// directions are open and both queues.
 struct Entry {
     request: Weak<RequestState>,
     semantics: bool,
@@ -50,6 +69,8 @@ struct Entry {
     outgoing_bytes: usize,
 }
 
+/// Datagram state of one request, shared by its send and receive handles, its
+/// stream guards and the response body hook.
 pub(crate) struct RequestState {
     id: StreamId,
     registry: Arc<Registry>,
@@ -61,12 +82,17 @@ pub(crate) struct RequestState {
     stop: OnceLock<fn(&(dyn Any + Send + Sync))>,
 }
 
+/// Keeps a request registered; dropping it removes the session.
 pub(crate) struct Registration(pub(crate) Arc<RequestState>);
 
+/// Moves packets between the QUIC Datagram transport and the registry; the
+/// connection task polls it.
 pub(crate) trait Drive: Send {
+    /// Polls both directions with bounded work; an error names the code to close with.
     fn poll(&mut self, cx: &mut Context<'_>) -> Poll<std::result::Result<(), (Code, Error)>>;
 }
 
+/// The [`Drive`] implementation over a backend sender and receiver.
 struct Driver<S, R> {
     sender: S,
     receiver: R,
@@ -93,6 +119,7 @@ pub enum SendErrorKind {
 // ===== impl Registry =====
 
 impl Registry {
+    /// Creates the registry and the driver for the transport's Datagram halves.
     pub(crate) fn new<S, R>(sender: S, receiver: R) -> (Arc<Self>, Box<dyn Drive>)
     where
         S: quic::SendDatagram + Send + 'static,
@@ -115,12 +142,15 @@ impl Registry {
         (registry, Box::new(driver))
     }
 
+    /// Locks the state, recovering a poisoned lock.
     fn lock(&self) -> MutexGuard<'_, State> {
         // No user code runs under this lock. Preserve cleanup if another thread
         // unwinds while manipulating an internal queue.
         self.state.lock().unwrap_or_else(|error| error.into_inner())
     }
 
+    /// Registers a request stream; `semantics` marks a Datagram request, any other
+    /// fails on its first Datagram.
     pub(crate) fn register(
         self: &Arc<Self>,
         id: StreamId,
@@ -154,10 +184,12 @@ impl Registry {
         Registration(request)
     }
 
+    /// Records whether the peer enabled H3_DATAGRAM.
     pub(crate) fn negotiated(&self, enabled: bool) {
         self.lock().negotiated = enabled;
     }
 
+    /// Drops every session once the connection ends.
     pub(crate) fn close(&self) {
         let entries = {
             let mut state = self.lock();
@@ -176,6 +208,8 @@ impl Registry {
         self.capacity.notify_waiters();
     }
 
+    /// Routes one received QUIC Datagram to its session, or invalidates a request
+    /// without Datagram semantics.
     fn receive(&self, packet: Bytes) -> Result<()> {
         let packet = Datagram::decode(packet).map_err(|error| {
             Error::new_h3(ConnectionError::Local {
@@ -222,6 +256,7 @@ impl Registry {
         Ok(())
     }
 
+    /// Takes the next packet to send, rotating between sessions.
     fn next(&self) -> Option<(u64, Bytes)> {
         let mut state = self.lock();
         while let Some(id) = state.ready.pop_front() {
@@ -247,14 +282,18 @@ impl Registry {
 // ===== impl RequestState =====
 
 impl RequestState {
+    /// The connection-wide capacity notifier senders wait on.
     pub(crate) fn capacity(&self) -> Arc<Notify> {
         self.registry.capacity.clone()
     }
 
+    /// The request stream ID.
     pub(crate) fn id(&self) -> StreamId {
         self.id
     }
 
+    /// Largest payload the session can send now, if Datagrams are negotiated and
+    /// its send direction is open.
     pub(crate) fn max_size(&self) -> Option<usize> {
         let state = self.registry.lock();
         let entry = state.streams.get(&self.id.into_inner())?;
@@ -264,6 +303,7 @@ impl RequestState {
         state.max_size?.checked_sub(self.prefix_size())
     }
 
+    /// Encoded size of the Quarter Stream ID prefix.
     fn prefix_size(&self) -> usize {
         match self.id.into_inner() / 4 {
             0..=63 => 1,
@@ -273,6 +313,7 @@ impl RequestState {
         }
     }
 
+    /// Frames and queues one payload within the session and connection budgets.
     pub(crate) fn send(&self, payload: &Bytes) -> std::result::Result<(), SendErrorKind> {
         let mut state = self.registry.lock();
         let Some(entry) = state.streams.get(&self.id.into_inner()) else {
@@ -317,6 +358,7 @@ impl RequestState {
         Ok(())
     }
 
+    /// Polls the next received payload; `None` once the receive direction closed.
     pub(crate) fn poll_recv(&self, cx: &mut Context<'_>) -> Poll<Option<Bytes>> {
         self.received.register(cx.waker());
         let mut state = self.registry.lock();
@@ -347,6 +389,7 @@ impl RequestState {
         let _ = self.stop_state.set(state);
     }
 
+    /// Closes the send direction and discards its queue.
     pub(crate) fn close_send(&self) {
         let mut state = self.registry.lock();
         if let Some(entry) = state.streams.get_mut(&self.id.into_inner()) {
@@ -362,6 +405,7 @@ impl RequestState {
         self.registry.capacity.notify_waiters();
     }
 
+    /// Closes the receive direction and discards its queue.
     pub(crate) fn close_recv(&self) {
         let mut state = self.registry.lock();
         if let Some(entry) = state.streams.get_mut(&self.id.into_inner()) {
@@ -375,6 +419,7 @@ impl RequestState {
         self.received.wake();
     }
 
+    /// Removes the session; both handles observe the end.
     pub(crate) fn close(&self) {
         let mut state = self.registry.lock();
         if let Some(entry) = state.streams.remove(&self.id.into_inner()) {

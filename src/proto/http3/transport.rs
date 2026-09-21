@@ -1,3 +1,8 @@
+//! Presents an [`rt::quic`](crate::rt::quic) backend to the `http3` protocol
+//! layer, which expects its own `quic` traits. This is the inverse of
+//! [`Compat`](crate::rt::quic::Compat): the backend implements the crate's
+//! contract, and this adapter satisfies http3's.
+
 use std::task::{ready, Context, Poll};
 
 use bytes::Buf;
@@ -5,20 +10,25 @@ use http3::quic::WriteBuf;
 
 use crate::rt::quic;
 
+/// Wraps a backend connection or opener for the protocol layer.
 #[derive(Clone)]
 pub(crate) struct Transport<T>(pub(crate) T);
 
+/// Wraps a backend stream, holding one write the backend has not accepted yet.
 pub(crate) struct Stream<T, B> {
     inner: T,
     pending: Option<WriteBuf<B>>,
 }
 
+/// The error http3 expects when accepting streams ends normally, which the
+/// backend reports as `None`.
 fn closed() -> http3::quic::ConnectionErrorIncoming {
     http3::quic::ConnectionErrorIncoming::ApplicationClose {
         error_code: http3::error::Code::H3_NO_ERROR.value(),
     }
 }
 
+/// A backend contract violation, reported as an internal connection error.
 fn contract_error(reason: &str) -> http3::quic::StreamErrorIncoming {
     http3::quic::StreamErrorIncoming::ConnectionErrorIncoming {
         connection_error: http3::quic::ConnectionErrorIncoming::InternalError(reason.into()),
@@ -82,6 +92,7 @@ impl<B: Buf, Q: quic::OpenStreams<B>> http3::quic::OpenStreams<B> for Transport<
 // ===== impl Stream =====
 
 impl<T, B> Stream<T, B> {
+    /// Wraps a backend stream with no pending write.
     fn new(inner: T) -> Self {
         Self {
             inner,

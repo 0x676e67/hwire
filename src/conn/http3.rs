@@ -1,4 +1,33 @@
-//! HTTP/3 client connections.
+//! HTTP/3 client connections over a QUIC connection the caller establishes.
+//!
+//! The caller performs the QUIC and TLS handshakes and hands the connection to
+//! [`Builder::handshake`] as an implementation of [`Connection`](crate::rt::quic::Connection)
+//! from [`rt::quic`](crate::rt::quic), for example a transport wrapped in
+//! [`Compat`](crate::rt::quic::Compat). The handshake returns a [`SendRequest`]
+//! handle and a [`Connection`] handle, like HTTP/1 and HTTP/2:
+//!
+//! - Each request runs inside the future returned by [`SendRequest::try_send_request`]: nothing is
+//!   queued and no task is spawned for it. Dropping that future cancels only that request.
+//! - The connection task runs on the executor given to [`Builder::new`], which implements
+//!   [`Http3ClientConnExec`]. The executor also runs uploads that outlive their response head and
+//!   CONNECT tunnels.
+//! - [`Connection`] resolves once the task finishes. Requests progress without it being polled, but
+//!   it must be kept: dropping it closes the QUIC connection and every outstanding exchange.
+//! - Dropping the last [`SendRequest`] drains the connection: requests created earlier still run,
+//!   and the task closes the connection once every exchange, including the acknowledgment of each
+//!   request FIN, is done. [`Connection::graceful_shutdown`] does the same and returns requests
+//!   still waiting for admission.
+//!
+//! Admission is limited locally by [`Http3Options::max_concurrent_requests`]. Extended CONNECT with
+//! HTTP Datagram sessions lives in the `datagram` submodule with the `http3-datagram` feature.
+//!
+//! ```ignore
+//! let (mut tx, connection) = Builder::new(exec).handshake::<_, Full<Bytes>>(quic).await?;
+//! let connection = tokio::spawn(connection);
+//! let response = tx
+//!     .try_send_request(Request::get("https://example.com/").body(Full::new(Bytes::new()))?)
+//!     .await?;
+//! ```
 
 #[cfg(feature = "http3-datagram")]
 pub mod datagram;
@@ -35,13 +64,16 @@ use crate::{
     Error, Result,
 };
 
+/// The boxed request future a handle returns.
 type ExchangeFuture<B> = BoxFuture<'static, Result<Response<Incoming>, TrySendError<Request<B>>>>;
 
 /// Starts requests on the connection. Erasing the QUIC backend and executor
 /// here keeps handles at `SendRequest<B>`, like the HTTP/1 and HTTP/2 ones.
 trait Exchange<B>: Send {
+    /// Starts a request with its reservation.
     fn call(&mut self, request: Request<B>, reservation: Option<Active>) -> ExchangeFuture<B>;
 
+    /// Clones the exchange for a cloned handle.
     fn clone_box(&self) -> Box<dyn Exchange<B>>;
 }
 
@@ -90,6 +122,8 @@ pub struct Builder<E> {
     options: Http3Options,
 }
 
+/// Closes the QUIC connection if the handshake is abandoned before the opener
+/// moves into the connection task.
 struct Opening<O: quic::OpenStreams<Bytes>>(Option<O>);
 
 // ===== impl SendRequest =====
@@ -269,6 +303,7 @@ impl<E> Builder<E> {
         self.handshake_inner(quic, Some(datagrams)).await
     }
 
+    /// Builds the protocol layer, spawns the connection task and returns the handles.
     async fn handshake_inner<Q, B>(
         self,
         quic: Q,

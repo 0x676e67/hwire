@@ -48,6 +48,7 @@ pub struct SendError {
     payload: Bytes,
 }
 
+/// Response extension holding the session until [`on`] takes it.
 #[derive(Clone)]
 pub(crate) struct Pending(Arc<Mutex<Option<Session>>>);
 
@@ -76,6 +77,7 @@ impl Session {
 // ===== impl Pending =====
 
 impl Pending {
+    /// Wraps the tunnel and Datagram state of a successful CONNECT.
     pub(crate) fn new(control: Upgraded, state: Arc<RequestState>) -> Self {
         Self(Arc::new(Mutex::new(Some(Session {
             control,
@@ -94,6 +96,7 @@ impl Clone for Sender {
 }
 
 impl Sender {
+    /// Creates a sender for a registered request.
     pub(crate) fn new(state: Arc<RequestState>) -> Self {
         Self {
             state,

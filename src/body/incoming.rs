@@ -71,6 +71,7 @@ impl Incoming {
         )
     }
 
+    /// Wraps an HTTP/3 response body read directly from its QUIC stream.
     #[cfg(feature = "http3")]
     pub(crate) fn h3(body: BoxBody<Bytes, Error>) -> Self {
         Self {

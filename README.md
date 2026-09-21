@@ -9,7 +9,8 @@ A low-level, asynchronous HTTP client protocol implementation for [wreq].
 ## Features
 
 - [HTTP/1](https://www.rfc-editor.org/rfc/rfc9112.html) and [HTTP/2](https://www.rfc-editor.org/rfc/rfc9113.html) implementations.
-- Optional [HTTP/3](https://www.rfc-editor.org/rfc/rfc9114.html) over [QUIC](https://www.rfc-editor.org/rfc/rfc9000.html) implementations. 
+- Optional [HTTP/3](https://www.rfc-editor.org/rfc/rfc9114.html) over a [QUIC](https://www.rfc-editor.org/rfc/rfc9000.html) connection established by the caller (`http3` feature).
+- HTTP/3 Extended CONNECT and [HTTP Datagrams](https://www.rfc-editor.org/rfc/rfc9297.html) (`http3-datagram` feature).
 - Streaming bodies and trailers with backpressure.
 - [HTTP Upgrade](https://www.rfc-editor.org/rfc/rfc9110.html#name-upgrade) and [CONNECT](https://www.rfc-editor.org/rfc/rfc9110.html#name-connect) tunnels, including [HTTP/2 Extended CONNECT](https://www.rfc-editor.org/rfc/rfc8441.html).
 - Pluggable executor, timer and transport interfaces implemented by the caller.
@@ -34,6 +35,10 @@ fn main() {
     // ...
 }
 ```
+
+HTTP/3 lives in `wreq_proto::conn::http3` behind the `http3` feature. The QUIC and
+TLS handshakes are the caller's: the connection is passed in through the
+`wreq_proto::rt::quic` traits, and the connection task runs on the caller's executor.
 
 ## Documentation
 

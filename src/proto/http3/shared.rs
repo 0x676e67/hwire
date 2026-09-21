@@ -1,3 +1,6 @@
+//! Connection state shared by the driver, request handles, bodies and uploads:
+//! peer settings, local admission, the drain and the published connection error.
+
 use std::{
     sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -157,6 +160,7 @@ impl Active {
         Ok(self)
     }
 
+    /// The connection state this exchange belongs to.
     pub(crate) fn shared(&self) -> &Arc<Shared> {
         &self.shared
     }
