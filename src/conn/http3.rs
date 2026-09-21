@@ -192,7 +192,7 @@ where
     ///
     /// # Errors
     ///
-    /// If there was an error before opening the request stream, the message
+    /// If there was an error before trying to open the request stream, the message
     /// will be returned as part of this error.
     ///
     /// # Cancel safety
