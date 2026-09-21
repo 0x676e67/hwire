@@ -179,7 +179,12 @@ impl<B> SendRequest<B> {
     pub fn is_closed(&self) -> bool {
         self.shared.is_closed()
     }
+}
 
+impl<B> SendRequest<B>
+where
+    B: Body + 'static,
+{
     /// Sends a request, returning it on failures before its stream opens.
     /// The returned future does the work when polled; dropping it cancels only
     /// this request. Keep the executor running to deliver QUIC reset/stop
