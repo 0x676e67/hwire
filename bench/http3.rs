@@ -385,10 +385,19 @@ async fn measure(
     )
     .await;
     drop(sender);
-    timeout(Duration::from_secs(10), driver)
+    // All requests and timing are complete. The direct client owns its driver;
+    // wreq-proto instead drains automatically after its last sender is dropped.
+    if !proto {
+        driver.abort();
+    }
+    match timeout(Duration::from_secs(10), driver)
         .await
-        .unwrap()
-        .unwrap();
+        .expect("client driver shutdown timed out")
+    {
+        Ok(()) => {}
+        Err(error) if !proto && error.is_cancelled() => {}
+        Err(error) => panic!("client driver failed: {error}"),
+    }
     assert_eq!(
         timeout(Duration::from_secs(10), server_task)
             .await
