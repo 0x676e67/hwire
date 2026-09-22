@@ -1,6 +1,6 @@
 # hwire
 
-[![CI](https://github.com/0x676e67/wreq-proto/actions/workflows/ci.yml/badge.svg)](https://github.com/0x676e67/wreq-proto/actions/workflows/ci.yml)
+[![CI](https://github.com/0x676e67/hwire/actions/workflows/ci.yml/badge.svg)](https://github.com/0x676e67/hwire/actions/workflows/ci.yml)
 [![License](https://img.shields.io/crates/l/hwire.svg)][license]
 [![Crates.io](https://img.shields.io/crates/v/hwire.svg)](https://crates.io/crates/hwire)
 
