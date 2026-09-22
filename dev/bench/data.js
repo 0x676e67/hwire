@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790100175197,
+  "lastUpdate": 1790100740017,
   "repoUrl": "https://github.com/0x676e67/wreq-proto",
   "entries": {
     "end_to_end": [
@@ -10691,6 +10691,114 @@ window.BENCHMARK_DATA = {
             "name": "http2_parallel_x10_res_1mb",
             "value": 4610031,
             "range": "± 55936.95",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "49699333+dependabot[bot]@users.noreply.github.com",
+            "name": "dependabot[bot]",
+            "username": "dependabot[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "754cedd154e94582799a421713267e409c637b64",
+          "message": "chore(deps): bump http-body from 1.0.1 to 1.1.0 (#72)\n\nBumps [http-body](https://github.com/hyperium/http-body) from 1.0.1 to 1.1.0.\n- [Release notes](https://github.com/hyperium/http-body/releases)\n- [Commits](https://github.com/hyperium/http-body/compare/v1.0.1...v1.1.0)\n\n---\nupdated-dependencies:\n- dependency-name: http-body\n  dependency-version: 1.1.0\n  dependency-type: direct:production\n  update-type: version-update:semver-minor\n...\n\nSigned-off-by: dependabot[bot] <support@github.com>\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>",
+          "timestamp": "2026-09-23T02:08:36+08:00",
+          "tree_id": "d8963cf8a80bfa9c4cb674e1e61134401c66ad48",
+          "url": "https://github.com/0x676e67/wreq-proto/commit/754cedd154e94582799a421713267e409c637b64"
+        },
+        "date": 1790100738865,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "http1_consecutive_x1_both_100kb",
+            "value": 50083,
+            "range": "± 682.56",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http1_consecutive_x1_both_10mb",
+            "value": 3407093,
+            "range": "± 358115.71",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http1_consecutive_x1_empty",
+            "value": 18373,
+            "range": "± 360.79",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http1_consecutive_x1_req_10b",
+            "value": 19275,
+            "range": "± 197.03",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_consecutive_x1_empty",
+            "value": 23118,
+            "range": "± 234.01",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_consecutive_x1_req_100kb",
+            "value": 75803,
+            "range": "± 1179.83",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_consecutive_x1_req_10b",
+            "value": 40999898,
+            "range": "± 4779.49",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_empty",
+            "value": 62956,
+            "range": "± 1476.55",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_req_10kb_100_chunks",
+            "value": 14939594,
+            "range": "± 16477961.39",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_req_10kb_100_chunks_adaptive_window",
+            "value": 6632229,
+            "range": "± 83648.57",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_req_10kb_100_chunks_max_window",
+            "value": 6775924,
+            "range": "± 136088.53",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_req_10mb",
+            "value": 86198854,
+            "range": "± 1405924.38",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_res_10mb",
+            "value": 46452619,
+            "range": "± 558245.39",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_res_1mb",
+            "value": 4576046,
+            "range": "± 84331.78",
             "unit": "ns/iter"
           }
         ]
