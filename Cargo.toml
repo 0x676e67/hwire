@@ -47,8 +47,8 @@ tokio-util = { version = "0.7.18", default-features = false }
 # Optional deps...
 
 
-http3 = { version = "=0.1.1", features = ["unstable"], optional = true }
-http3-datagram = { version = "=0.1.1", optional = true }
+http3 = { version = "=0.1.1", git = "https://github.com/0x676e67/http3", rev = "ec227449ecf66a129b47529352b8a0954d005f3d", features = ["unstable"], optional = true }
+http3-datagram = { version = "=0.1.1", git = "https://github.com/0x676e67/http3", rev = "ec227449ecf66a129b47529352b8a0954d005f3d", optional = true }
 
 tracing = { version = "0.1", default-features = false, optional = true }
 
@@ -58,7 +58,7 @@ send_wrapper = "0.6.0"
 socket2 = "0.6.4"
 h3 = "=0.0.8"
 h3-quinn = "=0.0.10"
-http3-quic = "=0.1.1"
+http3-quic = { version = "=0.1.1", git = "https://github.com/0x676e67/http3", rev = "ec227449ecf66a129b47529352b8a0954d005f3d" }
 quic = { version = "=0.12.2", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
 quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
 rcgen = "=0.14.9"
@@ -128,8 +128,3 @@ incremental = false
 [profile.bench]
 codegen-units = 1
 incremental = false
-
-# PR #107 head: `SendStream::poll_stopped`, GOAWAY rejection checked on poll, and the header decoding cleanup.
-[patch.crates-io]
-http3 = { git = "https://github.com/0x676e67/http3", rev = "ebb7181fb3c14ad23ce94268708e831ee4ff1c78" }
-http3-quic = { git = "https://github.com/0x676e67/http3", rev = "ebb7181fb3c14ad23ce94268708e831ee4ff1c78" }
