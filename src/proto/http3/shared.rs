@@ -1,4 +1,4 @@
-//! Connection state shared by the driver, request handles, bodies and uploads:
+//! Connection state shared by the driver, request handles, response bodies and body pipes:
 //! peer settings, local admission, the drain and the published connection error.
 
 use std::{
@@ -17,7 +17,7 @@ use tokio_util::sync::CancellationToken;
 use super::datagram::Registry;
 use crate::{Error, Result};
 
-/// Connection state shared by the driver, request handles, bodies and uploads.
+/// Connection state shared by the driver, request handles, response bodies and body pipes.
 pub(crate) struct Shared {
     #[cfg(feature = "http3-datagram")]
     pub(crate) datagrams: Option<Arc<Registry>>,
@@ -33,7 +33,7 @@ pub(crate) struct Shared {
     /// admission is closed, which returns them on their next poll.
     pub(crate) reserved: AtomicUsize,
 
-    /// Admitted exchanges: pending heads, unread bodies, uploads and tunnels.
+    /// Admitted exchanges: pending heads, unread bodies, body pipes and tunnels.
     /// A permit the semaphore assigned to a waiter does not count until that
     /// request runs, so a shutdown can finish without it being polled.
     pub(crate) active: AtomicUsize,
@@ -109,8 +109,9 @@ impl Shared {
         }
     }
 
-    /// Whether new requests are no longer accepted.
-    pub(crate) fn is_closed(&self) -> bool {
+    /// Whether draining has started. Existing requests may still be admitted
+    /// until an explicit shutdown closes the semaphore.
+    pub(crate) fn is_draining(&self) -> bool {
         self.draining.load(Ordering::Acquire)
     }
 

@@ -20,12 +20,12 @@ use tokio::{
 use tokio_util::sync::{CancellationToken, PollSender};
 
 use super::{
-    client::{cooperate, invalid_datagram, RecvGuard, SendGuard, CHUNK},
+    client::{cooperate, invalid_datagram, H3ClientFuture, RecvGuard, SendGuard, CHUNK},
     shared::Active,
 };
 use crate::{
     body::{chan, Incoming},
-    rt::Executor,
+    rt::{self, bounds::Http3ClientConnExec},
     upgrade::{pending, Upgraded},
     Error, Result,
 };
@@ -45,7 +45,7 @@ enum Write {
 
 /// Tunnel I/O handed to the application through `Upgraded`. Reads drain the
 /// pump task's channel; writes are forwarded to it one chunk at a time.
-struct Io {
+struct H3Upgraded {
     rx: chan::Receiver,
     data: Bytes,
     sender: PollSender<Write>,
@@ -54,6 +54,40 @@ struct Io {
     read_closed: bool,
     #[cfg(feature = "http3-datagram")]
     datagrams: Option<Arc<RequestState>>,
+}
+
+/// Owns a CONNECT transfer and its admission slot until both directions
+/// finish. A failed transfer reports its cause to the tunnel reader. Dropping
+/// the task cancels unfinished directions and releases its admission slot.
+pub struct UpgradeTask {
+    // The transfer keeps its existing allocation because http3 exposes async
+    // send/finish operations without public poll equivalents.
+    transfer: Option<BoxFuture<'static, (Result<()>, Option<chan::Sender>)>>,
+    active: Option<Active>,
+    #[cfg(feature = "http3-datagram")]
+    registration: Option<Registration>,
+}
+
+// ===== impl UpgradeTask =====
+
+impl Future for UpgradeTask {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        let this = self.get_mut();
+        let Some(transfer) = this.transfer.as_mut() else {
+            return Poll::Ready(());
+        };
+        let (result, body) = ready!(transfer.as_mut().poll(cx));
+        this.transfer = None;
+        if let (Err(error), Some(mut body), Some(active)) = (result, body, this.active.as_ref()) {
+            body.send_error(active.shared().error_or(error));
+        }
+        #[cfg(feature = "http3-datagram")]
+        this.registration.take();
+        this.active.take();
+        Poll::Ready(())
+    }
 }
 
 /// Datagram semantics and the registration owned by a CONNECT tunnel task.
@@ -67,7 +101,7 @@ pub(super) enum TunnelDatagrams {
 /// Turns a successful CONNECT into an upgraded tunnel. Both stream directions
 /// move to an executor task that reads eagerly, so peer resets surface even
 /// while the tunnel is idle.
-pub(super) fn tunnel<S, R, E>(
+pub(super) fn tunnel<Q, S, R, E>(
     send: SendGuard<S>,
     recv: RecvGuard<R>,
     mut headers: Response<()>,
@@ -78,7 +112,8 @@ pub(super) fn tunnel<S, R, E>(
 where
     S: quic::SendStream<Bytes> + Send + 'static,
     R: quic::RecvStream + Send + 'static,
-    E: Executor<BoxFuture<'static, ()>>,
+    Q: rt::quic::Connection<Bytes>,
+    E: Http3ClientConnExec<Q>,
 {
     #[cfg(feature = "http3-datagram")]
     let (registration, datagrams) = match datagrams {
@@ -89,17 +124,17 @@ where
             (Some(registration), Some(state))
         }
     };
-    
+
     #[cfg(feature = "http3-datagram")]
     let invalid = registration
         .as_ref()
         .map(|registration| registration.0.invalid.clone());
-    
+
     #[cfg(not(feature = "http3-datagram"))]
     let invalid: Option<CancellationToken> = None;
     let (body, rx) = chan::channel(false);
     let (tx, writes) = mpsc::channel(1);
-    let io = Io {
+    let io = H3Upgraded {
         rx,
         data: Bytes::new(),
         sender: PollSender::new(tx),
@@ -109,7 +144,7 @@ where
         #[cfg(feature = "http3-datagram")]
         datagrams: datagrams.clone(),
     };
-    
+
     let (pending, on_upgrade) = pending();
     let io = Upgraded::new(io, Bytes::new());
     #[cfg(feature = "http3-datagram")]
@@ -119,48 +154,47 @@ where
     } else {
         Some(io)
     };
-    
+
     #[cfg(not(feature = "http3-datagram"))]
     let io = Some(io);
     if io.is_some() {
         headers.extensions_mut().insert(on_upgrade);
     }
     *headers.version_mut() = http::Version::HTTP_3;
-    
-    exec.execute(Box::pin(run(
-        send,
-        recv,
-        body,
-        writes,
-        active,
-        invalid,
-        #[cfg(feature = "http3-datagram")]
-        registration,
-    )));
+
+    exec.execute_h3_future(H3ClientFuture::Upgrade {
+        task: UpgradeTask {
+            transfer: Some(Box::pin(transfer(send, recv, body, writes, invalid))),
+            active: Some(active),
+            #[cfg(feature = "http3-datagram")]
+            registration,
+        },
+    });
     if let Some(io) = io {
         pending.fulfill(io);
     }
     headers.map(|()| Incoming::empty())
 }
 
-/// Pumps both directions until the tunnel closes or fails, then reports the
-/// failure to the reader.
-async fn run<S, R>(
+/// Pumps both directions, returning the reader sender when an error needs reporting.
+async fn transfer<S, R>(
     send: SendGuard<S>,
     recv: RecvGuard<R>,
     body: chan::Sender,
     writes: mpsc::Receiver<Write>,
-    active: Active,
     invalid: Option<CancellationToken>,
-    #[cfg(feature = "http3-datagram")] registration: Option<Registration>,
-) where
+) -> (Result<()>, Option<chan::Sender>)
+where
     S: quic::SendStream<Bytes>,
     R: quic::RecvStream,
 {
     let mut body = Some(body);
     let result = {
         let mut invalid_watch = pin!(invalid_datagram(invalid));
-        let mut transfer = pin!(try_join(upload(send, writes), download(recv, &mut body)));
+        let mut transfer = pin!(try_join(
+            send_stream(send, writes),
+            recv_stream(recv, &mut body)
+        ));
         poll_fn(|cx| {
             if let Poll::Ready(error) = invalid_watch.as_mut().poll(cx) {
                 return Poll::Ready(Err(error));
@@ -169,18 +203,12 @@ async fn run<S, R>(
         })
         .await
     };
-    
-    if let (Err(error), Some(mut body)) = (result, body) {
-        body.send_error(active.shared().error_or(error));
-    }
-    
-    #[cfg(feature = "http3-datagram")]
-    drop(registration);
-    drop(active);
+
+    (result.map(|_| ()), body)
 }
 
 /// Writes tunnel data until the application shuts down or the peer stops.
-async fn upload<S: quic::SendStream<Bytes>>(
+async fn send_stream<S: quic::SendStream<Bytes>>(
     mut send: SendGuard<S>,
     mut rx: mpsc::Receiver<Write>,
 ) -> Result<()> {
@@ -218,7 +246,7 @@ async fn upload<S: quic::SendStream<Bytes>>(
         }
         cooperate(&mut budget).await;
     }
-    
+
     if stopped {
         #[cfg(feature = "http3-datagram")]
         if let Some(datagrams) = &send.datagrams {
@@ -231,7 +259,7 @@ async fn upload<S: quic::SendStream<Bytes>>(
 }
 
 /// Forwards received data to the tunnel reader and closes it at FIN.
-async fn download<R: quic::RecvStream>(
+async fn recv_stream<R: quic::RecvStream>(
     mut recv: RecvGuard<R>,
     body: &mut Option<chan::Sender>,
 ) -> Result<()> {
@@ -257,7 +285,7 @@ async fn download<R: quic::RecvStream>(
         }
         cooperate(&mut budget).await;
     }
-    
+
     poll_fn(|cx| {
         if sender.poll_closed(cx).is_ready() {
             return Poll::Ready(Err(Error::new_canceled()));
@@ -265,13 +293,13 @@ async fn download<R: quic::RecvStream>(
         recv.stream.poll_recv_trailers(cx).map_err(Error::new_h3)
     })
     .await?;
-    
+
     recv.finished = true;
     #[cfg(feature = "http3-datagram")]
     if let Some(datagrams) = &recv.datagrams {
         datagrams.close_recv();
     }
-    
+
     // Dropping the sender delivers EOF to the tunnel reader.
     body.take();
     Ok(())
@@ -282,9 +310,9 @@ fn closed() -> io::Error {
     io::Error::new(io::ErrorKind::BrokenPipe, "HTTP/3 tunnel closed")
 }
 
-// ===== impl Io =====
+// ===== impl H3Upgraded =====
 
-impl Io {
+impl H3Upgraded {
     /// Waits for the pump task to acknowledge the pending flush or finish.
     fn poll_ack(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         if let Some((finish, ack)) = self.pending.as_mut() {
@@ -324,7 +352,7 @@ impl Io {
     }
 }
 
-impl AsyncRead for Io {
+impl AsyncRead for H3Upgraded {
     fn poll_read(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -358,7 +386,7 @@ impl AsyncRead for Io {
     }
 }
 
-impl AsyncWrite for Io {
+impl AsyncWrite for H3Upgraded {
     fn poll_write(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -389,7 +417,7 @@ impl AsyncWrite for Io {
 }
 
 #[cfg(feature = "http3-datagram")]
-impl Drop for Io {
+impl Drop for H3Upgraded {
     fn drop(&mut self) {
         if let Some(datagrams) = &self.datagrams {
             datagrams.close();

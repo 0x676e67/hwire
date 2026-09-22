@@ -1,6 +1,6 @@
 //! HTTP Datagram sessions carried by an Extended CONNECT request.
 //!
-//! Insert [`DatagramRequest`] alongside `http3::ext::Protocol`. After a successful
+//! Insert [`DatagramRequest`] alongside [`Protocol`](crate::http3::Protocol). After a successful
 //! response, [`on`] takes the session, including its reliable Capsule byte stream.
 //! Capsule and CONNECT-UDP Context ID encoding belong to the caller.
 use std::{
@@ -112,14 +112,14 @@ impl Sender {
         cx: &mut Context<'_>,
         payload: &Bytes,
     ) -> Poll<Result<(), SendErrorKind>> {
-        let result = self.state.send(payload);
+        let result = self.state.try_send(payload);
         if result != Err(SendErrorKind::Full) {
             self.waiting = None;
             return Poll::Ready(result);
         }
         let waiting = self
             .waiting
-            .get_or_insert_with(|| Box::pin(self.state.capacity().notified_owned()));
+            .get_or_insert_with(|| Box::pin(self.state.capacity_notify().notified_owned()));
         if waiting.as_mut().poll(cx).is_ready() {
             self.waiting = None;
             cx.waker().wake_by_ref();
@@ -127,7 +127,7 @@ impl Sender {
         }
         // Register before rechecking capacity so a concurrent dequeue cannot
         // leave this sender asleep with room available.
-        match self.state.send(payload) {
+        match self.state.try_send(payload) {
             Err(SendErrorKind::Full) => Poll::Pending,
             result => {
                 self.waiting = None;
@@ -160,7 +160,7 @@ impl Sender {
     /// plus one packet being sent. Congestion or a later MTU change may drop it.
     pub fn try_send(&self, payload: Bytes) -> Result<(), SendError> {
         self.state
-            .send(&payload)
+            .try_send(&payload)
             .map_err(|kind| SendError { kind, payload })
     }
 }

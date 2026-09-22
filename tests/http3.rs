@@ -27,17 +27,15 @@ mod soak;
 mod tls;
 
 use std::{
-    any::TypeId,
     future::Future,
     sync::{
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc,
     },
     time::Duration,
 };
 
 use bytes::{Buf, Bytes, BytesMut};
-use futures_util::future::BoxFuture;
 use http::{HeaderMap, Request, Response, Version};
 use http_body_util::{BodyExt, Full};
 use tokio::{sync::oneshot, time::timeout};
@@ -783,14 +781,13 @@ async fn extended_connect_requires_peer_permission() {
     .await;
 }
 
-/// Runs the connection task but drops every upload or tunnel it is handed.
-#[derive(Clone, Copy)]
-struct Discard;
+/// One connection: handshake submits the first task; later tasks are discarded.
+#[derive(Clone, Default)]
+struct Discard(Arc<AtomicBool>);
 
 impl<F: Future<Output = ()> + Send + 'static> Executor<F> for Discard {
     fn execute(&self, future: F) {
-        // Uploads and tunnels are boxed; the internal connection task is not.
-        if TypeId::of::<F>() == TypeId::of::<BoxFuture<'static, ()>>() {
+        if self.0.swap(true, Ordering::Relaxed) {
             drop(future);
         } else {
             tokio::spawn(future);
@@ -801,26 +798,31 @@ impl<F: Future<Output = ()> + Send + 'static> Executor<F> for Discard {
 /// Runs everything but keeps the upload and tunnel tasks so a test can abort
 /// them after they ran.
 #[derive(Clone, Default)]
-struct Aborting(Arc<std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>>);
+struct Aborting {
+    connection_submitted: Arc<AtomicBool>,
+    tasks: Arc<std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>>,
+}
 
 impl<F: Future<Output = ()> + Send + 'static> Executor<F> for Aborting {
     fn execute(&self, future: F) {
+        // Each fixture serves one connection, submitted by handshake first.
+        let is_exchange = self.connection_submitted.swap(true, Ordering::Relaxed);
         let task = tokio::spawn(future);
-        if TypeId::of::<F>() == TypeId::of::<BoxFuture<'static, ()>>() {
-            self.0.lock().unwrap().push(task);
+        if is_exchange {
+            self.tasks.lock().unwrap().push(task);
         }
     }
 }
 
 #[tokio::test]
 async fn executor_discard_resets_pending_upload_and_releases_slot() {
-    dropped_upload_task_releases_slot(Discard, |_| {}).await;
+    dropped_upload_task_releases_slot(Discard::default(), |_| {}).await;
 }
 
 #[tokio::test]
 async fn aborted_upload_task_resets_upload_and_releases_slot() {
     let aborting = Aborting::default();
-    let tasks = aborting.0.clone();
+    let tasks = aborting.tasks.clone();
     dropped_upload_task_releases_slot(aborting, move |_| {
         let tasks = tasks.lock().unwrap();
         assert_eq!(tasks.len(), 1);

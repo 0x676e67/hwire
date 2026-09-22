@@ -25,8 +25,8 @@ use super::{
 use crate::{lock::LockResultExt, Error, Result};
 
 /// Response body handed to the application; [`Incoming`](crate::body::Incoming)
-/// boxes it. Dropping it stops receiving without touching an upload that is
-/// still running. Length bookkeeping stays here, so only a poll takes the lock.
+/// boxes it. Dropping it stops receiving without canceling pending sending.
+/// Length bookkeeping stays here, so only a poll takes the lock.
 pub(super) struct RecvBody<S: quic::RecvStream> {
     link: Arc<Link<S>>,
     /// Declared length still expected.
@@ -36,21 +36,20 @@ pub(super) struct RecvBody<S: quic::RecvStream> {
     ended: bool,
 }
 
-/// Links the body with an upload that outlived the response head. The lock
+/// Links the body with sending that outlived the response head. The lock
 /// guards the receive half so either side can stop the exchange at once; the
-/// upload's signals are atomics, so its polling never contends with the
+/// send task's signals are atomics, so its polling never contends with the
 /// body's reads.
 struct Link<S: quic::RecvStream> {
     state: Mutex<State<S>>,
-    /// The response failed; the upload task resets its direction.
+    /// The response failed; the send task resets its direction.
     abort: AtomicBool,
-    upload_waker: AtomicWaker,
+    pipe_waker: AtomicWaker,
 }
 
-/// The upload task's side of the link. Dropping it records the end of the
-/// upload, so a task the executor discards still returns the permit once the
-/// response is done.
-pub(super) struct UploadGuard<S: quic::RecvStream> {
+/// The body pipe's side of the link. Dropping it records completion, so a task
+/// the executor discards still returns the permit once the response is done.
+pub(super) struct PipeGuard<S: quic::RecvStream> {
     link: Arc<Link<S>>,
     error: Option<Error>,
 }
@@ -59,14 +58,14 @@ pub(super) struct UploadGuard<S: quic::RecvStream> {
 /// abandoned by the application.
 struct State<S: quic::RecvStream> {
     recv: Option<RecvGuard<S>>,
-    /// Released once the response is finished and no upload remains.
+    /// Released once the response is finished and sending is complete.
     active: Option<Active>,
     #[cfg(feature = "http3-datagram")]
     registration: Option<Registration>,
-    /// An upload still runs on the executor.
-    upload: bool,
+    /// Body sending or FIN acknowledgment still runs on the executor.
+    pipe_pending: bool,
     error: Option<Error>,
-    /// The body's waker, for a failure reported by the upload or a Datagram.
+    /// The body's waker, for a failure reported by the send task or a Datagram.
     waker: Option<Waker>,
 }
 
@@ -74,13 +73,14 @@ struct State<S: quic::RecvStream> {
 
 impl<S: quic::RecvStream> RecvBody<S> {
     /// Wraps the receive half once the head is delivered; `remaining` is the
-    /// declared length still expected, `upload` whether one is still running.
+    /// declared length still expected, `pipe_pending` whether sending or FIN
+    /// acknowledgment still needs the executor.
     pub(super) fn new(
         recv: RecvGuard<S>,
         remaining: Option<u64>,
         active: Active,
         #[cfg(feature = "http3-datagram")] registration: Option<Registration>,
-        upload: bool,
+        pipe_pending: bool,
     ) -> Self {
         Self {
             link: Arc::new(Link {
@@ -89,12 +89,12 @@ impl<S: quic::RecvStream> RecvBody<S> {
                     active: Some(active),
                     #[cfg(feature = "http3-datagram")]
                     registration,
-                    upload,
+                    pipe_pending,
                     error: None,
                     waker: None,
                 }),
                 abort: AtomicBool::new(false),
-                upload_waker: AtomicWaker::new(),
+                pipe_waker: AtomicWaker::new(),
             }),
             remaining,
             data_done: false,
@@ -102,9 +102,9 @@ impl<S: quic::RecvStream> RecvBody<S> {
         }
     }
 
-    /// The upload task's handle on the shared state.
-    pub(super) fn upload_guard(&self) -> UploadGuard<S> {
-        UploadGuard {
+    /// The send task's handle on the shared state.
+    pub(super) fn pipe_guard(&self) -> PipeGuard<S> {
+        PipeGuard {
             link: self.link.clone(),
             error: None,
         }
@@ -157,10 +157,10 @@ where
         this.ended = state.recv.is_none() && state.error.is_none();
         drop(state);
         if matches!(frame, Some(Err(_))) {
-            // A failed response aborts the exchange: the upload task resets
+            // A failed response aborts the exchange: the send task resets
             // its direction on its next poll.
             this.link.abort.store(true, Ordering::Release);
-            this.link.upload_waker.wake();
+            this.link.pipe_waker.wake();
         }
         Poll::Ready(frame)
     }
@@ -189,27 +189,27 @@ impl<S: quic::RecvStream> Drop for RecvBody<S> {
     }
 }
 
-// ===== impl UploadGuard =====
+// ===== impl PipeGuard =====
 
-impl<S: quic::RecvStream> UploadGuard<S> {
-    /// Registers the upload task; returns false once a response failure has
-    /// aborted the exchange, so the task resets its upload.
+impl<S: quic::RecvStream> PipeGuard<S> {
+    /// Registers the send task; returns false once a response failure has
+    /// aborted the exchange, so the task resets its send direction.
     pub(super) fn watch(&self, cx: &Context<'_>) -> bool {
-        self.link.upload_waker.register(cx.waker());
+        self.link.pipe_waker.register(cx.waker());
         !self.link.abort.load(Ordering::Acquire)
     }
 
-    /// Reports the upload's failure, which cancels a response the application
+    /// Reports a send failure, which cancels a response the application
     /// still holds.
     pub(super) fn fail(&mut self, error: Error) {
         self.error = Some(error);
     }
 }
 
-impl<S: quic::RecvStream> Drop for UploadGuard<S> {
+impl<S: quic::RecvStream> Drop for PipeGuard<S> {
     fn drop(&mut self) {
         let mut state = self.link.state.lock().panic_if_poisoned();
-        state.upload = false;
+        state.pipe_pending = false;
         state.release();
         drop(state);
         if let Some(error) = self.error.take() {
@@ -299,9 +299,9 @@ impl<S: quic::RecvStream> State<S> {
         error
     }
 
-    /// Returns the permit once the response is done and no upload remains.
+    /// Returns the permit once the response is done and sending is complete.
     fn release(&mut self) {
-        if self.recv.is_none() && !self.upload {
+        if self.recv.is_none() && !self.pipe_pending {
             #[cfg(feature = "http3-datagram")]
             {
                 self.registration = None;

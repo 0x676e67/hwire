@@ -9,8 +9,8 @@
 //! - Each request runs inside the future returned by [`SendRequest::try_send_request`]: nothing is
 //!   queued and no task is spawned for it. Dropping that future cancels only that request.
 //! - The connection task runs on the executor given to [`Builder::new`], which implements
-//!   [`Http3ClientConnExec`]. The executor also runs uploads that outlive their response head and
-//!   CONNECT tunnels.
+//!   [`Http3ClientConnExec`]. It also drives request body sending that outlives the response head,
+//!   including FIN acknowledgment, and CONNECT tunnels.
 //! - [`Connection`] resolves once the task finishes. Requests progress without it being polled, but
 //!   it must be kept: dropping it closes the QUIC connection and every outstanding exchange.
 //! - Dropping the last [`SendRequest`] starts draining: requests created earlier still run, and the
@@ -54,13 +54,12 @@ use crate::{
     dispatch::TrySendError,
     error::BoxError,
     proto::http3::{
-        client,
-        driver::ConnTask,
+        client::{self, ConnTask, H3ClientFuture},
         shared::{Active, Shared},
         transport::Transport,
         Http3Options,
     },
-    rt::{bounds::Http3ClientConnExec, quic, Executor},
+    rt::{bounds::Http3ClientConnExec, quic},
     Error, Result,
 };
 
@@ -77,22 +76,14 @@ trait Exchange<B>: Send {
     fn clone_box(&self) -> Box<dyn Exchange<B>>;
 }
 
-/// The request opener and executor behind a handle; each request future
-/// receives its own clones.
-struct Opener<O: quic::OpenStreams<Bytes>, E> {
-    sender: http3::client::SendRequest<Transport<O>, Bytes>,
-    exec: E,
-    shared: Arc<Shared>,
-}
-
 /// The sender side of an established connection.
 ///
 /// Each request runs inside the future returned by [`Self::try_send_request`].
-/// Only uploads that outlive the response head and CONNECT tunnels are handed
-/// to the executor.
+/// Request body sending that outlives the response head, including FIN
+/// acknowledgment, and CONNECT tunnels are handed to the executor.
 pub struct SendRequest<B> {
     /// The lock only makes the handle `Sync` without requiring that of the
-    /// QUIC backend; requests reach the opener through `get_mut` and never
+    /// QUIC backend; requests reach the exchange through `get_mut` and never
     /// lock.
     exchange: Mutex<Box<dyn Exchange<B>>>,
     shared: Arc<Shared>,
@@ -137,7 +128,7 @@ pub struct Builder<E> {
 
 /// Closes the QUIC connection if the handshake is abandoned before the opener
 /// moves into the connection task.
-struct Opening<O: quic::OpenStreams<Bytes>>(Option<O>);
+struct HandshakeGuard<O: quic::OpenStreams<Bytes>>(Option<O>);
 
 // ===== impl SendRequest =====
 
@@ -184,12 +175,12 @@ impl<B> SendRequest<B> {
 
     /// Returns a readiness hint; the connection may close before a request is sent.
     pub fn is_ready(&self) -> bool {
-        !self.shared.is_closed()
+        !self.shared.is_draining()
     }
 
     /// Whether the connection no longer accepts new requests.
     pub fn is_closed(&self) -> bool {
-        self.shared.is_closed()
+        self.shared.is_draining()
     }
 }
 
@@ -217,7 +208,7 @@ where
     /// Keep the executor and QUIC transport running so cancellation can reach the peer.
     ///
     /// After the response is delivered, dropping its body only cancels receiving;
-    /// an unfinished upload can continue independently.
+    /// unfinished request body sending can continue independently.
     #[allow(clippy::result_large_err)]
     pub fn try_send_request(
         &mut self,
@@ -225,7 +216,7 @@ where
     ) -> impl Future<Output = Result<Response<Incoming>, TrySendError<Request<B>>>> {
         // Reserve before returning the future so dropping the last sender
         // cannot close the connection before this request is polled.
-        let reservation = (!self.shared.is_closed()).then(|| Active::reserve(&self.shared));
+        let reservation = (!self.shared.is_draining()).then(|| Active::reserve(&self.shared));
         self.exchange
             .get_mut()
             .unwrap_or_else(PoisonError::into_inner)
@@ -233,44 +224,26 @@ where
     }
 }
 
-// ===== impl Opener =====
+// ===== impl Exchange =====
 
-impl<O, B, E> Exchange<B> for Opener<O, E>
+impl<B, F> Exchange<B> for F
 where
-    O: quic::OpenStreams<Bytes> + Clone + Send + 'static,
-    O::BidiStream: quic::BidiStream<Bytes> + Send + 'static,
-    <O::BidiStream as quic::BidiStream<Bytes>>::SendStream: Send + 'static,
-    <O::BidiStream as quic::BidiStream<Bytes>>::RecvStream: Send + 'static,
-    <<O::BidiStream as quic::BidiStream<Bytes>>::RecvStream as quic::RecvStream>::Buf: Send,
-    B: Body + Send + 'static,
-    B::Data: Send,
-    B::Error: Into<BoxError>,
-    E: Executor<BoxFuture<'static, ()>> + Clone + Send + 'static,
+    F: FnMut(Request<B>, Option<Active>) -> ExchangeFuture<B> + Clone + Send + 'static,
 {
     fn call(&mut self, request: Request<B>, reservation: Option<Active>) -> ExchangeFuture<B> {
-        Box::pin(client::request(
-            self.sender.clone(),
-            self.exec.clone(),
-            self.shared.clone(),
-            request,
-            reservation,
-        ))
+        self(request, reservation)
     }
 
     fn clone_box(&self) -> Box<dyn Exchange<B>> {
-        Box::new(Self {
-            sender: self.sender.clone(),
-            exec: self.exec.clone(),
-            shared: self.shared.clone(),
-        })
+        Box::new(self.clone())
     }
 }
 
 // ===== impl Builder =====
 
 impl<E> Builder<E> {
-    /// Creates a builder. The executor runs the connection task, and the
-    /// uploads that outlive their response head and CONNECT tunnels.
+    /// Creates a builder. The executor drives the connection, CONNECT tunnels,
+    /// and request body sending or FIN acknowledgment after the response head.
     pub fn new(exec: E) -> Self {
         Self {
             exec,
@@ -373,7 +346,7 @@ impl<E> Builder<E> {
             ));
         }
 
-        let mut opening = Opening(Some(quic.opener()));
+        let mut handshake_guard = HandshakeGuard(Some(quic.opener()));
         let mut builder = http3::client::builder();
         builder
             .max_field_section_size(opts.max_field_section_size)
@@ -401,7 +374,7 @@ impl<E> Builder<E> {
             registry,
         );
 
-        let opener = opening.0.take().ok_or_else(Error::new_canceled)?;
+        let opener = handshake_guard.0.take().ok_or_else(Error::new_canceled)?;
         let (done, completion) = oneshot::channel();
         let task = ConnTask::new(
             driver,
@@ -412,13 +385,23 @@ impl<E> Builder<E> {
             done,
         );
 
-        self.exec.execute_h3_task(task);
-
-        let exchange: Box<dyn Exchange<B>> = Box::new(Opener {
-            sender,
-            exec: self.exec,
-            shared: shared.clone(),
+        self.exec.execute_h3_future(H3ClientFuture::Task {
+            task: Box::pin(task),
         });
+
+        let exchange: Box<dyn Exchange<B>> = {
+            let shared = shared.clone();
+            let exec = self.exec;
+            Box::new(move |request, reservation| {
+                client::request::<Q, _, _>(
+                    sender.clone(),
+                    exec.clone(),
+                    shared.clone(),
+                    request,
+                    reservation,
+                )
+            })
+        };
 
         Ok((
             SendRequest {
@@ -446,7 +429,7 @@ where
     B::Error: Into<BoxError>,
 {
     /// Stops admitting requests and waits for existing exchanges to finish.
-    /// Accepted upload bytes and FIN must be acknowledged or stopped by the peer.
+    /// Accepted request body bytes and FIN must be acknowledged or stopped by the peer.
     /// This only initiates shutdown; await the handle, with a deadline applied
     /// outside, to observe completion.
     pub fn graceful_shutdown(self: Pin<&mut Self>) {
@@ -498,9 +481,9 @@ where
     }
 }
 
-// ===== impl Opening =====
+// ===== impl HandshakeGuard =====
 
-impl<O: quic::OpenStreams<Bytes>> Drop for Opening<O> {
+impl<O: quic::OpenStreams<Bytes>> Drop for HandshakeGuard<O> {
     fn drop(&mut self) {
         if let Some(opener) = self.0.as_mut() {
             opener.close(Code::H3_NO_ERROR.value(), b"HTTP/3 handshake canceled");

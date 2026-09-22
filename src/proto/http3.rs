@@ -17,7 +17,6 @@ pub(crate) mod body;
 pub(crate) mod client;
 #[cfg(feature = "http3-datagram")]
 pub(crate) mod datagram;
-pub(crate) mod driver;
 pub(crate) mod shared;
 pub(crate) mod transport;
 pub(crate) mod upgrade;

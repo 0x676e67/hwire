@@ -33,8 +33,8 @@
 //!   in-flight and future requests.
 //! - **HTTP/3**, if a stream has been opened, cancels its unfinished send and receive directions
 //!   with `H3_REQUEST_CANCELLED`, leaving the shared connection usable. After the response has been
-//!   delivered, dropping its body only cancels receiving; an unfinished upload can continue
-//!   independently.
+//!   delivered, dropping its body only cancels receiving; unfinished request body sending can
+//!   continue independently.
 //!
 //! Keep driving the connection and its background tasks to complete cancellation.
 //!

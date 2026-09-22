@@ -44,7 +44,7 @@ const CONNECTION_BYTES: usize = 1024 * 1024;
 pub(crate) struct Registry {
     state: Mutex<State>,
     waker: AtomicWaker,
-    capacity: Arc<Notify>,
+    capacity_notify: Arc<Notify>,
 }
 
 /// Registry state under its lock: sessions by Quarter Stream ID, the send
@@ -129,7 +129,7 @@ impl Registry {
                 ..State::default()
             }),
             waker: AtomicWaker::new(),
-            capacity: Arc::new(Notify::new()),
+            capacity_notify: Arc::new(Notify::new()),
         });
         let driver = Driver {
             sender,
@@ -203,7 +203,7 @@ impl Registry {
             }
         }
         self.waker.wake();
-        self.capacity.notify_waiters();
+        self.capacity_notify.notify_waiters();
     }
 
     /// Routes one received QUIC Datagram to its session, or invalidates a request
@@ -271,7 +271,7 @@ impl Registry {
             }
             state.outgoing -= packet.len();
             drop(state);
-            self.capacity.notify_waiters();
+            self.capacity_notify.notify_waiters();
             return Some((id, packet));
         }
         None
@@ -282,8 +282,8 @@ impl Registry {
 
 impl RequestState {
     /// The connection-wide capacity notifier senders wait on.
-    pub(crate) fn capacity(&self) -> Arc<Notify> {
-        self.registry.capacity.clone()
+    pub(crate) fn capacity_notify(&self) -> Arc<Notify> {
+        self.registry.capacity_notify.clone()
     }
 
     /// The request stream ID.
@@ -312,8 +312,9 @@ impl RequestState {
         }
     }
 
-    /// Frames and queues one payload within the session and connection budgets.
-    pub(crate) fn send(&self, payload: &Bytes) -> std::result::Result<(), SendErrorKind> {
+    /// Tries to frame and queue one payload within the session and connection
+    /// budgets. Returns `Full` immediately when either queue has no capacity.
+    pub(crate) fn try_send(&self, payload: &Bytes) -> std::result::Result<(), SendErrorKind> {
         let mut state = self.registry.lock();
         let Some(entry) = state.streams.get(&self.id.into_inner()) else {
             return Err(SendErrorKind::Closed);
@@ -401,7 +402,7 @@ impl RequestState {
         }
         drop(state);
         self.registry.waker.wake();
-        self.registry.capacity.notify_waiters();
+        self.registry.capacity_notify.notify_waiters();
     }
 
     /// Closes the receive direction and discards its queue.
@@ -429,7 +430,7 @@ impl RequestState {
         drop(state);
         self.received.wake();
         self.registry.waker.wake();
-        self.registry.capacity.notify_waiters();
+        self.registry.capacity_notify.notify_waiters();
     }
 }
 
@@ -520,7 +521,7 @@ mod tests {
                 ..State::default()
             }),
             waker: AtomicWaker::new(),
-            capacity: Arc::new(Notify::new()),
+            capacity_notify: Arc::new(Notify::new()),
         })
     }
 
@@ -543,7 +544,7 @@ mod tests {
             CancellationToken::new(),
         );
         for _ in 0..PACKETS {
-            request.0.send(&Bytes::new()).unwrap();
+            request.0.try_send(&Bytes::new()).unwrap();
         }
         let mut first = Sender::new(request.0.clone());
         let mut second = first.clone();
@@ -598,17 +599,17 @@ mod tests {
             CancellationToken::new(),
         );
         for _ in 0..PACKETS {
-            first.0.send(&Bytes::new()).unwrap();
-            second.0.send(&Bytes::from_static(b"other")).unwrap();
+            first.0.try_send(&Bytes::new()).unwrap();
+            second.0.try_send(&Bytes::from_static(b"other")).unwrap();
         }
-        assert_eq!(first.0.send(&Bytes::new()), Err(SendErrorKind::Full));
+        assert_eq!(first.0.try_send(&Bytes::new()), Err(SendErrorKind::Full));
         for _ in 0..PACKETS {
             assert_eq!(registry.next().unwrap().0, 0);
             assert_eq!(registry.next().unwrap().0, 4);
         }
         assert!(registry.next().is_none());
         assert_eq!(registry.lock().outgoing, 0);
-        first.0.send(&Bytes::new()).unwrap();
+        first.0.try_send(&Bytes::new()).unwrap();
         drop(first);
         drop(second);
         let state = registry.lock();
@@ -631,18 +632,21 @@ mod tests {
             .collect();
         let payload = Bytes::from(vec![0; 65535]);
         for request in &requests[..8] {
-            request.0.send(&payload).unwrap();
-            request.0.send(&payload).unwrap();
-            assert_eq!(request.0.send(&Bytes::new()), Err(SendErrorKind::Full));
+            request.0.try_send(&payload).unwrap();
+            request.0.try_send(&payload).unwrap();
+            assert_eq!(request.0.try_send(&Bytes::new()), Err(SendErrorKind::Full));
         }
         assert_eq!(registry.lock().outgoing, CONNECTION_BYTES);
-        assert_eq!(requests[8].0.send(&Bytes::new()), Err(SendErrorKind::Full));
+        assert_eq!(
+            requests[8].0.try_send(&Bytes::new()),
+            Err(SendErrorKind::Full)
+        );
         requests[0].0.close_send();
-        requests[8].0.send(&payload).unwrap();
+        requests[8].0.try_send(&payload).unwrap();
         registry.close();
         assert_eq!(registry.lock().outgoing, 0);
         assert_eq!(
-            requests[8].0.send(&Bytes::new()),
+            requests[8].0.try_send(&Bytes::new()),
             Err(SendErrorKind::Closed)
         );
     }
@@ -779,8 +783,8 @@ mod tests {
                 true,
                 CancellationToken::new(),
             );
-            request.send(&Bytes::from_static(b"canceled")).unwrap();
-            live.0.send(&Bytes::from_static(b"live")).unwrap();
+            request.try_send(&Bytes::from_static(b"canceled")).unwrap();
+            live.0.try_send(&Bytes::from_static(b"live")).unwrap();
             let mut driver = Driver {
                 sender: DatagramSender {
                     max: 1300,
@@ -806,7 +810,7 @@ mod tests {
             }
             // Closure must wake the driver even while QUIC remains blocked.
             assert!(wakes.0.load(std::sync::atomic::Ordering::Relaxed) > before_close);
-            assert_eq!(request.send(&Bytes::new()), Err(SendErrorKind::Closed));
+            assert_eq!(request.try_send(&Bytes::new()), Err(SendErrorKind::Closed));
             assert!(Pin::new(&mut driver).poll(&mut cx).is_pending());
             assert_eq!(driver.pending.as_ref().unwrap().0, 4);
             assert!(driver.sender.accepted.is_empty());
@@ -820,7 +824,7 @@ mod tests {
             assert_eq!(packet.into_payload(), "live");
             assert_eq!(registry.lock().outgoing, 0);
             assert!(!live.0.invalid.is_cancelled());
-            live.0.send(&Bytes::from_static(b"reused")).unwrap();
+            live.0.try_send(&Bytes::from_static(b"reused")).unwrap();
             assert!(Pin::new(&mut driver).poll(&mut cx).is_pending());
             assert_eq!(driver.sender.accepted.len(), 1);
         }
@@ -851,8 +855,8 @@ mod tests {
         let mut cx = Context::from_waker(&waker);
         assert!(Pin::new(&mut driver).poll(&mut cx).is_pending());
         assert_eq!(request.0.max_size(), Some(1298));
-        request.0.send(&Bytes::from(vec![7; 1298])).unwrap();
-        request.0.send(&Bytes::from_static(b"next")).unwrap();
+        request.0.try_send(&Bytes::from(vec![7; 1298])).unwrap();
+        request.0.try_send(&Bytes::from_static(b"next")).unwrap();
         assert!(Pin::new(&mut driver).poll(&mut cx).is_pending());
         assert!(driver.pending.is_some());
         assert!(driver.sender.accepted.is_empty());
@@ -868,10 +872,10 @@ mod tests {
         let received = Datagram::decode(driver.sender.accepted.pop().unwrap()).unwrap();
         assert_eq!(received.into_payload(), "next");
         assert_eq!(
-            request.0.send(&Bytes::from(vec![7; 1199])),
+            request.0.try_send(&Bytes::from(vec![7; 1199])),
             Err(SendErrorKind::TooLarge)
         );
-        request.0.send(&Bytes::from(vec![7; 1198])).unwrap();
+        request.0.try_send(&Bytes::from(vec![7; 1198])).unwrap();
         assert!(Pin::new(&mut driver).poll(&mut cx).is_pending());
         assert_eq!(driver.sender.accepted[0].len(), 1200);
         assert_eq!(registry.lock().outgoing, 0);

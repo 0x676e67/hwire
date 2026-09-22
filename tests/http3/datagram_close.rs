@@ -20,6 +20,7 @@ struct Jobs(Arc<Queue>);
 struct Queue {
     jobs: Mutex<Vec<BoxFuture<'static, ()>>>,
     waker: AtomicWaker,
+    connection_submitted: AtomicBool,
     /// Queue the connection task too, so a test drives it in lockstep.
     inline_task: bool,
 }
@@ -52,7 +53,9 @@ impl Jobs {
 
 impl<F: Future<Output = ()> + Send + 'static> Executor<F> for Jobs {
     fn execute(&self, job: F) {
-        if self.0.inline_task || TypeId::of::<F>() == TypeId::of::<BoxFuture<'static, ()>>() {
+        // Handshake submits the connection before it can submit exchanges.
+        let is_exchange = self.0.connection_submitted.swap(true, Ordering::Relaxed);
+        if self.0.inline_task || is_exchange {
             self.0.jobs.lock().unwrap().push(Box::pin(job));
             self.0.waker.wake();
         } else {

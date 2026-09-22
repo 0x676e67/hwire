@@ -81,19 +81,19 @@ mod h2_client {
 #[cfg(feature = "http3")]
 mod h3_client {
     use bytes::Bytes;
-    use futures_util::future::BoxFuture;
 
     use crate::{
-        proto::http3::driver::ConnTask,
+        proto::http3::client::H3ClientFuture,
         rt::{quic, Executor},
     };
 
     /// An executor to spawn HTTP/3 futures for the client: the connection
-    /// task, and the boxed uploads and CONNECT tunnels that outlive their
-    /// request future. Request futures carry their own clone of it.
+    /// task, body pipes and CONNECT tunnels that outlive their
+    /// request future. Body pipes include FIN acknowledgment; request futures
+    /// each carry an executor clone.
     ///
     /// Implement [`Executor`] generically for the futures your runtime supports;
-    /// the connection task type is internal and does not need to be named.
+    /// the task enum is internal and does not need to be named.
     /// Compatible executors implement this trait automatically.
     ///
     /// This trait is sealed and cannot be implemented for types outside this crate.
@@ -116,29 +116,28 @@ mod h3_client {
     ///     }
     /// }
     /// ```
-    pub trait Http3ClientConnExec<Q>:
-        Executor<BoxFuture<'static, ()>> + Clone + sealed_client::Sealed<Q>
+    pub trait Http3ClientConnExec<Q>: Clone + sealed_client::Sealed<Q>
     where
         Q: quic::Connection<Bytes>,
     {
         #[doc(hidden)]
-        fn execute_h3_task(&self, task: ConnTask<Q>);
+        fn execute_h3_future(&self, future: H3ClientFuture<Q>);
     }
 
     impl<E, Q> Http3ClientConnExec<Q> for E
     where
-        E: Executor<ConnTask<Q>> + Executor<BoxFuture<'static, ()>> + Clone,
+        E: Executor<H3ClientFuture<Q>> + Clone,
         Q: quic::Connection<Bytes>,
     {
         #[inline]
-        fn execute_h3_task(&self, task: ConnTask<Q>) {
-            Executor::<ConnTask<Q>>::execute(self, task)
+        fn execute_h3_future(&self, future: H3ClientFuture<Q>) {
+            self.execute(future)
         }
     }
 
     impl<E, Q> sealed_client::Sealed<Q> for E
     where
-        E: Executor<ConnTask<Q>> + Executor<BoxFuture<'static, ()>> + Clone,
+        E: Executor<H3ClientFuture<Q>> + Clone,
         Q: quic::Connection<Bytes>,
     {
     }
