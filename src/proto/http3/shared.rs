@@ -87,16 +87,17 @@ impl Shared {
     /// Drains and returns requests waiting for SETTINGS or admission. The driver
     /// calls this on every poll while closing, so only a change wakes it.
     pub(crate) fn shutdown(&self) {
-        if !self.permits.is_closed() {
+        let admission_open = !self.permits.is_closed();
+        if admission_open {
             self.permits.close();
-            // Also wake a drain already waiting for unpolled reservations.
-            self.waker.wake();
         }
         self.drain();
-        // A sender-drop drain leaves SETTINGS pending; an explicit shutdown
-        // must still wake those waiters even if draining was already set.
-        // SETTINGS waiters have not entered the admission semaphore yet.
-        self.settings_ready.cancel();
+        if admission_open {
+            // A sender-drop drain leaves admission and SETTINGS waiting open.
+            // Closing admission must wake them even when already draining.
+            self.settings_ready.cancel();
+            self.waker.wake();
+        }
     }
 
     /// Publishes the connection error and fails everything still waiting on it.
@@ -188,5 +189,39 @@ impl Drop for Active {
         if self.shared.draining.load(Ordering::Acquire) {
             self.shared.waker.wake();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An admission counts the exchange before it releases its reservation;
+    /// the idle check must see it in every state, open or shut. A permit the
+    /// semaphore assigned to a waiter that has not run yet must not count.
+    #[test]
+    fn admission_stays_visible_between_its_count_and_its_reservation() {
+        let shared = Shared::new(
+            1,
+            #[cfg(feature = "http3-datagram")]
+            None,
+        );
+        shared.reserved.fetch_add(1, Ordering::AcqRel);
+        shared.drain();
+        assert!(!shared.is_idle());
+        shared.permits.try_acquire().unwrap().forget();
+        shared.active.fetch_add(1, Ordering::AcqRel);
+        assert!(!shared.is_idle());
+        shared.reserved.fetch_sub(1, Ordering::AcqRel);
+        assert!(!shared.is_idle());
+        shared.permits.add_permits(1);
+        shared.active.fetch_sub(1, Ordering::AcqRel);
+        assert!(shared.is_idle());
+        // A shutdown skips a request still waiting for admission, even one
+        // the semaphore already assigned a permit to.
+        shared.reserved.fetch_add(1, Ordering::AcqRel);
+        shared.permits.try_acquire().unwrap().forget();
+        shared.shutdown();
+        assert!(shared.is_idle());
     }
 }

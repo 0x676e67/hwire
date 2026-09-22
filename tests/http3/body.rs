@@ -36,6 +36,8 @@ async fn graceful_shutdown_returns_connect_waiting_for_settings() {
             // Delay the upstream HTTP/3 server's SETTINGS until after shutdown.
             // The ordinary request occupies the slot and keeps the drain alive.
             driver.as_mut().graceful_shutdown();
+            // Repeated shutdown must also preserve the original wakeup.
+            driver.as_mut().graceful_shutdown();
             if polled {
                 assert!(waiting.is_woken());
             }
