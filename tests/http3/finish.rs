@@ -72,8 +72,9 @@ async fn check_drain(connect: bool) {
             let mut response = tx.try_send_request(request.body(body).unwrap()).await.unwrap();
             if drop_sender {
                 drop(tx);
+            } else {
+                shutdown.send(()).unwrap();
             }
-            shutdown.send(()).unwrap();
             if connect {
                 let mut tunnel = wreq_proto::upgrade::on(&mut response).await.unwrap();
                 let mut incoming = Vec::new();
@@ -160,8 +161,9 @@ async fn empty_request_drain_waits_for_fin_ack() {
                 .is_empty());
             if drop_sender {
                 drop(tx);
+            } else {
+                shutdown.send(()).unwrap();
             }
-            shutdown.send(()).unwrap();
             // The request FIN is sent but not yet acknowledged; the drain must
             // wait for it even though no upload task exists.
             tokio::select! {

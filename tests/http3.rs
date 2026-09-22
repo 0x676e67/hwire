@@ -364,7 +364,7 @@ async fn streaming_post_trailers_and_last_sender_drop() {
             _endpoints,
             ..
         } = pair(Http3Options::default()).await;
-        let mut client_driver = Box::pin(driver);
+        let client_driver = Box::pin(driver);
         let (received, ready) = oneshot::channel();
         let server_task = tokio::spawn(async move {
             let resolver = server.accept().await.unwrap().unwrap();
@@ -414,7 +414,6 @@ async fn streaming_post_trailers_and_last_sender_drop() {
         let body = response.into_body().collect().await.unwrap();
         assert_eq!(body.trailers().unwrap()["x-complete"], "yes");
         assert_eq!(body.to_bytes(), "hello");
-        client_driver.as_mut().graceful_shutdown();
         client_driver.await.unwrap();
         server_task.await.unwrap();
     })

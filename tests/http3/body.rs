@@ -2,7 +2,7 @@ use super::*;
 
 #[tokio::test]
 async fn graceful_shutdown_returns_connect_waiting_for_settings() {
-    for polled in [false, true] {
+    for (polled, drop_sender) in [(false, false), (true, false), (false, true), (true, true)] {
         bounded(async {
             let (_, server_config, client_config) = tls::config();
             let (client, server, _endpoints) = quic_pair(server_config, client_config).await;
@@ -29,6 +29,9 @@ async fn graceful_shutdown_returns_connect_waiting_for_settings() {
             let mut waiting = tokio_test::task::spawn(tx.try_send_request(request));
             if polled {
                 assert!(waiting.poll().is_pending());
+            }
+            if drop_sender {
+                drop(tx);
             }
             // Delay the upstream HTTP/3 server's SETTINGS until after shutdown.
             // The ordinary request occupies the slot and keeps the drain alive.
@@ -135,7 +138,6 @@ async fn last_sender_drop_preserves_connect_waiting_for_settings() {
             .unwrap()
             .to_bytes()
             .is_empty());
-        drive.as_mut().graceful_shutdown();
         drive.await.unwrap();
         peer.await.unwrap();
     })
@@ -169,7 +171,7 @@ async fn last_sender_drop_preserves_unpolled_requests() {
                 })
                 .collect();
             drop(tx);
-            let mut drive = Box::pin(driver);
+            let drive = Box::pin(driver);
             let peer = tokio::spawn(async move {
                 for _ in 0..35 {
                     let (request, mut stream) = server
@@ -201,7 +203,6 @@ async fn last_sender_drop_preserves_unpolled_requests() {
                     .to_bytes();
                 assert_eq!(body, format!("/{index}"));
             }
-            drive.as_mut().graceful_shutdown();
             drive.await.unwrap();
             peer.await.unwrap();
         })
@@ -255,7 +256,6 @@ async fn last_sender_drop_preserves_live_response() {
         resume.send(()).unwrap();
         let body = response.into_body().collect().await.unwrap().to_bytes();
         assert_eq!(body, "response after pool eviction");
-        drive.as_mut().graceful_shutdown();
         drive.await.unwrap();
         peer.await.unwrap();
     })
@@ -263,37 +263,60 @@ async fn last_sender_drop_preserves_live_response() {
 }
 
 #[tokio::test]
-async fn last_sender_drop_keeps_idle_connection_until_driver_closes() {
-    for graceful in [false, true] {
-        bounded(async {
-            let Pair {
-                tx,
-                driver,
-                mut server,
-                _endpoints,
-                ..
-            } = pair(Http3Options::default()).await;
-            let clone = tx.clone();
-            drop(tx);
-            drop(clone);
-            let mut driver = Box::pin(driver);
-            assert!(
-                timeout(Duration::from_millis(50), server.accept())
-                    .await
-                    .is_err(),
-                "dropping senders closed the idle connection"
-            );
-            assert!(timeout(Duration::ZERO, driver.as_mut()).await.is_err());
-            if graceful {
-                driver.as_mut().graceful_shutdown();
-                driver.await.unwrap();
-            } else {
-                drop(driver);
-            }
-            assert!(server.accept().await.err().unwrap().is_h3_no_error());
-        })
-        .await;
-    }
+async fn last_sender_drop_closes_idle_connection() {
+    bounded(async {
+        let Pair {
+            tx,
+            driver,
+            mut server,
+            _endpoints,
+            ..
+        } = pair(Http3Options::default()).await;
+        let clone = tx.clone();
+        drop(tx);
+        let mut driver = Box::pin(driver);
+        assert!(
+            timeout(Duration::from_millis(50), server.accept())
+                .await
+                .is_err(),
+            "a remaining sender must keep the connection open"
+        );
+        assert!(timeout(Duration::ZERO, driver.as_mut()).await.is_err());
+        drop(clone);
+        driver.await.unwrap();
+        assert!(server.accept().await.err().unwrap().is_h3_no_error());
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn last_sender_drop_waits_for_unpolled_request_cancellation() {
+    bounded(async {
+        let Pair {
+            mut tx,
+            driver,
+            mut server,
+            _endpoints,
+            ..
+        } = pair(Http3Options::default()).await;
+        let request = tx.try_send_request(
+            Request::get("https://localhost/unsent")
+                .body(Full::new(Bytes::new()))
+                .unwrap(),
+        );
+        drop(tx);
+        let mut driver = Box::pin(driver);
+        assert!(
+            timeout(Duration::from_millis(50), driver.as_mut())
+                .await
+                .is_err(),
+            "the created request must keep the drain alive"
+        );
+        drop(request);
+        driver.await.unwrap();
+        assert!(server.accept().await.err().unwrap().is_h3_no_error());
+    })
+    .await;
 }
 
 #[tokio::test]
@@ -1112,12 +1135,16 @@ async fn unpolled_request_does_not_block_graceful_shutdown() {
                 .body(Full::new(Bytes::new()))
                 .unwrap(),
         );
+        drop(tx);
         let mut driver = Box::pin(driver);
+        // Let the automatic drain park on the unpolled reservation first.
+        assert!(timeout(Duration::from_millis(50), driver.as_mut())
+            .await
+            .is_err());
         driver.as_mut().graceful_shutdown();
         driver.await.unwrap();
         let returned = unpolled.await.unwrap_err().take_message().unwrap();
         assert_eq!(returned.uri().path(), "/unpolled");
-        drop(tx);
         peer.await.unwrap();
     })
     .await;
