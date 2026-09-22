@@ -120,7 +120,7 @@ where
             .get()
             .is_some_and(|enabled| *enabled)
         {
-            let error = if shared.is_closed() {
+            let error = if shared.permits.is_closed() {
                 shared.error()
             } else {
                 Error::new_user_invalid_request("peer did not enable Extended CONNECT")

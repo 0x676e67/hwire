@@ -147,6 +147,51 @@ async fn last_sender_drop_preserves_connect_waiting_for_settings() {
 }
 
 #[tokio::test]
+async fn last_sender_drop_preserves_connect_permission_error() {
+    for polled in [false, true] {
+        bounded(async {
+            let (_, server_config, client_config) = tls::config();
+            let (client, server, _endpoints) = quic_pair(server_config, client_config).await;
+            let (mut tx, driver) = Builder::new(Exec)
+                .handshake::<_, ClientBody>(native::Connection::new(client))
+                .await
+                .unwrap();
+            let mut request = Request::connect("https://localhost/connect-udp")
+                .body(Full::new(Bytes::new()))
+                .unwrap();
+            request
+                .extensions_mut()
+                .insert(http3::ext::Protocol::CONNECT_UDP);
+            let mut waiting = tokio_test::task::spawn(tx.try_send_request(request));
+            if polled {
+                assert!(waiting.poll().is_pending());
+            }
+            drop(tx);
+            // Resolve SETTINGS only after the last sender has started draining.
+            let mut server = h3::server::builder()
+                .enable_extended_connect(false)
+                .build::<_, Bytes>(h3_quinn::Connection::new(server))
+                .await
+                .unwrap();
+            let peer = tokio::spawn(async move {
+                match server.accept().await {
+                    Ok(None) => {}
+                    Err(error) if error.is_h3_no_error() => {}
+                    _ => panic!("Extended CONNECT was sent without permission"),
+                }
+            });
+            let mut error = waiting.await.unwrap_err();
+            assert!(error.error().is_user(), "{error:?}");
+            assert!(!error.error().is_canceled());
+            assert_eq!(error.take_message().unwrap().uri().path(), "/connect-udp");
+            driver.await.unwrap();
+            peer.await.unwrap();
+        })
+        .await;
+    }
+}
+
+#[tokio::test]
 async fn last_sender_drop_preserves_unpolled_requests() {
     for limit in [1, 128] {
         bounded(async {
