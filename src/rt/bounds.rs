@@ -92,10 +92,30 @@ mod h3_client {
     /// task, and the boxed uploads and CONNECT tunnels that outlive their
     /// request future. Request futures carry their own clone of it.
     ///
-    /// This trait is implemented for compatible types that implement
-    /// [`Executor`] for any future.
+    /// Implement [`Executor`] generically for the futures your runtime supports;
+    /// the connection task type is internal and does not need to be named.
+    /// Compatible executors implement this trait automatically.
     ///
     /// This trait is sealed and cannot be implemented for types outside this crate.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use std::future::Future;
+    /// use wreq_proto::rt::Executor;
+    ///
+    /// #[derive(Clone)]
+    /// struct TokioExecutor;
+    ///
+    /// impl<F> Executor<F> for TokioExecutor
+    /// where
+    ///     F: Future<Output = ()> + Send + 'static,
+    /// {
+    ///     fn execute(&self, future: F) {
+    ///         tokio::spawn(future);
+    ///     }
+    /// }
+    /// ```
     pub trait Http3ClientConnExec<Q>:
         Executor<BoxFuture<'static, ()>> + Clone + sealed_client::Sealed<Q>
     where
