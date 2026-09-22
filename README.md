@@ -1,10 +1,10 @@
-# wreq-proto
+# hwire
 
 [![CI](https://github.com/0x676e67/wreq-proto/actions/workflows/ci.yml/badge.svg)](https://github.com/0x676e67/wreq-proto/actions/workflows/ci.yml)
-[![License](https://img.shields.io/crates/l/wreq-proto.svg)][license]
-[![Crates.io](https://img.shields.io/crates/v/wreq-proto.svg)](https://crates.io/crates/wreq-proto)
+[![License](https://img.shields.io/crates/l/hwire.svg)][license]
+[![Crates.io](https://img.shields.io/crates/v/hwire.svg)](https://crates.io/crates/hwire)
 
-A low-level, asynchronous HTTP client protocol implementation for [wreq].
+An HTTP library written in Rust.
 
 ## Features
 
@@ -22,13 +22,13 @@ Add the protocol crate to `Cargo.toml`:
 
 ```toml
 [dependencies]
-wreq-proto = "0.2"
+hwire = "0.2"
 ```
 
 The client APIs are organized by protocol:
 
 ```rust
-use wreq_proto::conn::{http1, http2};
+use hwire::conn::{http1, http2};
 
 fn main() {
     // ...
@@ -38,7 +38,7 @@ fn main() {
 ## Documentation
 
 - [Protocol API][protocol-api]
-- [Runtime contracts](https://docs.rs/wreq-proto/latest/wreq_proto/rt/)
+- [Runtime contracts](https://docs.rs/hwire/latest/hwire/rt/)
 
 ## License
 
@@ -52,7 +52,6 @@ Unless you explicitly state otherwise, any contribution intentionally submitted 
 
 A hard fork of [Hyper].
 
-[wreq]: https://github.com/0x676e67/wreq
 [Hyper]: https://github.com/hyperium/hyper
-[protocol-api]: https://docs.rs/wreq-proto
+[protocol-api]: https://docs.rs/hwire
 [license]: ./LICENSE

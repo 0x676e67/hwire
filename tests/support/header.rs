@@ -101,7 +101,7 @@ impl OrigHeaderMap {
     }
 }
 
-impl wreq_proto::ext::OnPreserveHeaderCallback for OrigHeaderMap {
+impl hwire::ext::OnPreserveHeaderCallback for OrigHeaderMap {
     /// Sorts headers by this map, preserving original casing.
     /// Headers in the map come first, others follow.
     fn call(&self, headers: &mut HeaderMap) {

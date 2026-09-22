@@ -78,7 +78,7 @@ async fn check_drain(connect: bool) {
                 drop(shutdown);
             }
             if connect {
-                let mut tunnel = wreq_proto::upgrade::on(&mut response).await.unwrap();
+                let mut tunnel = hwire::upgrade::on(&mut response).await.unwrap();
                 let mut incoming = Vec::new();
                 tunnel.read_to_end(&mut incoming).await.unwrap();
                 assert!(incoming.is_empty());

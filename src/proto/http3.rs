@@ -2,7 +2,7 @@
 //!
 //! Extended CONNECT and pseudo-header ordering use request extensions:
 //! ```
-//! use wreq_proto::http3::{Protocol, PseudoId, PseudoOrder};
+//! use hwire::http3::{Protocol, PseudoId, PseudoOrder};
 //!
 //! let request = http::Request::connect("https://example.com/tunnel")
 //!     .extension(Protocol::WEBSOCKET)

@@ -34,7 +34,7 @@ body = """
 trim = true
 [git]
 protect_breaking_commits = false
-tag_pattern = "^(wreq-rt-)?v[0-9].*"
+tag_pattern = "^v[0-9].*"
 sort_commits = "newest"
 commit_preprocessors = [
   { pattern = '\((\w+\s)?#([0-9]+)\)', replace = "([#${2}](https://github.com/0x676e67/wreq-proto/issues/${2}))" },

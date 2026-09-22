@@ -1,5 +1,5 @@
+use hwire::conn::http3::datagram::{self, SendErrorKind};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use wreq_proto::conn::http3::datagram::{self, SendErrorKind};
 
 use super::*;
 
@@ -81,7 +81,7 @@ async fn dropping_rejected_connect_body_preserves_next_datagram_session() {
         let mut rejected = tx.try_send_request(datagram_request()).await.unwrap();
         assert_eq!(rejected.status(), 407);
         assert!(datagram::on(&mut rejected).is_none());
-        assert!(wreq_proto::upgrade::on(&mut rejected).await.is_err());
+        assert!(hwire::upgrade::on(&mut rejected).await.is_err());
         drop(rejected);
 
         let mut response = tx.try_send_request(datagram_request()).await.unwrap();
