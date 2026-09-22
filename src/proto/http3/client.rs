@@ -8,7 +8,7 @@ use std::{
     future::{pending, poll_fn, Future},
     pin::{pin, Pin},
     sync::Arc,
-    task::{Context, Poll, Waker},
+    task::{ready, Context, Poll, Waker},
 };
 
 use bytes::{Buf, Bytes};
@@ -188,7 +188,7 @@ impl<S: quic::RecvStream> Future for PipeMap<S> {
         } else if !guard.watch(cx) {
             Err(Error::new_canceled())
         } else {
-            std::task::ready!(pipe.as_mut().poll(cx))
+            ready!(pipe.as_mut().poll(cx))
         };
 
         this.invalid.set(None);
@@ -537,7 +537,7 @@ where
         // read before anything is finished.
         let initial_response = if connect {
             let headers = {
-                let mut response = pin!(response_headers(&mut recv));
+                let mut response = pin!(ResponseFutMap { recv: &mut recv });
                 poll_fn(|cx| {
                     if let Poll::Ready(error) = invalid_watch.as_mut().poll(cx) {
                         return Poll::Ready(Err(error));
@@ -588,7 +588,7 @@ where
         let mut headers = match initial_response {
             Some(headers) => headers,
             None => {
-                let mut response = pin!(response_headers(&mut recv));
+                let mut response = pin!(ResponseFutMap { recv: &mut recv });
                 poll_fn(|cx| {
                     if let Some(pending) = pipe.as_mut() {
                         match pending.as_mut().poll(cx) {
@@ -707,7 +707,7 @@ where
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let send = &mut self.get_mut().send;
-        match std::task::ready!(send.stream.poll_finish(cx)) {
+        match ready!(send.stream.poll_finish(cx)) {
             Ok(()) => {}
             Err(StreamError::RemoteTerminate { .. }) => return Poll::Ready(Ok(())),
             Err(error) => return Poll::Ready(Err(Error::new_h3(error))),
@@ -793,7 +793,7 @@ where
         }
         for _ in 0..32 {
             if *this.finishing {
-                match std::task::ready!(this.send.stream.poll_finish(cx)) {
+                match ready!(this.send.stream.poll_finish(cx)) {
                     Ok(()) => {}
                     Err(StreamError::RemoteTerminate { .. }) => return Poll::Ready(Ok(())),
                     Err(error) => return Poll::Ready(Err(Error::new_h3(error))),
@@ -814,7 +814,7 @@ where
             if let Poll::Ready(result) = this.send.stream.poll_stopped(cx) {
                 return Poll::Ready(result.map(|_| ()).map_err(Error::new_h3));
             }
-            match std::task::ready!(this.send.stream.poll_ready(cx)) {
+            match ready!(this.send.stream.poll_ready(cx)) {
                 Ok(()) => {}
                 Err(StreamError::RemoteTerminate { .. }) => return Poll::Ready(Ok(())),
                 Err(error) => return Poll::Ready(Err(Error::new_h3(error))),
@@ -831,7 +831,7 @@ where
                 }
                 *this.data = None;
             }
-            let frame = match std::task::ready!(this.body.as_mut().poll_frame(cx)) {
+            let frame = match ready!(this.body.as_mut().poll_frame(cx)) {
                 Some(frame) => frame.map_err(Error::new_user_body)?,
                 None => {
                     if this.remaining.is_some_and(|n| n != 0) {
@@ -875,29 +875,42 @@ where
 }
 
 /// Reads the final response head, skipping informational responses.
-async fn response_headers<S>(recv: &mut RecvGuard<S>) -> Result<Response<()>>
+struct ResponseFutMap<'a, S>
 where
     S: quic::RecvStream,
 {
-    let mut budget = 0;
-    let headers = loop {
-        let headers = recv.stream.recv_response().await.map_err(Error::new_h3)?;
-        if headers.status() == StatusCode::SWITCHING_PROTOCOLS {
-            recv.code = Code::H3_MESSAGE_ERROR;
-            return Err(Error::new_h3("HTTP/3 response cannot use status 101"));
+    recv: &'a mut RecvGuard<S>,
+}
+
+// ===== impl ResponseFutMap =====
+
+impl<S> Future for ResponseFutMap<'_, S>
+where
+    S: quic::RecvStream,
+{
+    type Output = Result<Response<()>>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let recv = &mut self.get_mut().recv;
+        for _ in 0..32 {
+            let headers = ready!(recv.stream.poll_recv_response(cx)).map_err(Error::new_h3)?;
+            if headers.status() == StatusCode::SWITCHING_PROTOCOLS {
+                recv.code = Code::H3_MESSAGE_ERROR;
+                return Poll::Ready(Err(Error::new_h3("HTTP/3 response cannot use status 101")));
+            }
+            if !headers.status().is_informational() {
+                return Poll::Ready(Ok(headers));
+            }
+            // Ignore the length on a response without content, but still validate
+            // the field syntax. RFC 9114, Section 4.1.2.
+            // https://www.rfc-editor.org/rfc/rfc9114.html#section-4.1.2
+            content_length(headers.headers()).inspect_err(|_| {
+                recv.code = Code::H3_MESSAGE_ERROR;
+            })?;
         }
-        if !headers.status().is_informational() {
-            break headers;
-        }
-        // Ignore the length on a response without content, but still validate
-        // the field syntax. RFC 9114, Section 4.1.2.
-        // https://www.rfc-editor.org/rfc/rfc9114.html#section-4.1.2
-        content_length(headers.headers()).inspect_err(|_| {
-            recv.code = Code::H3_MESSAGE_ERROR;
-        })?;
-        cooperate(&mut budget).await;
-    };
-    Ok(headers)
+        cx.waker().wake_by_ref();
+        Poll::Pending
+    }
 }
 
 /// Validates the request and returns its declared Content-Length.
@@ -964,24 +977,4 @@ pub(super) fn consume_length(remaining: &mut Option<u64>, size: usize) -> Result
             .ok_or("body exceeds content-length")?;
     }
     Ok(())
-}
-
-/// Yields after a burst of ready frames so one stream cannot starve the runtime.
-pub(super) async fn cooperate(budget: &mut usize) {
-    *budget += 1;
-    if *budget < 32 {
-        return;
-    }
-    *budget = 0;
-    let mut yielded = false;
-    poll_fn(|cx| {
-        if yielded {
-            Poll::Ready(())
-        } else {
-            yielded = true;
-            cx.waker().wake_by_ref();
-            Poll::Pending
-        }
-    })
-    .await;
 }

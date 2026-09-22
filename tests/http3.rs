@@ -1886,14 +1886,14 @@ async fn datagram_handshake_rejects_order_omitting_its_setting() {
 }
 
 #[tokio::test]
-async fn invalid_response_lengths_signal_message_error_and_preserve_connection() {
+async fn invalid_response_heads_signal_message_error_and_preserve_connection() {
     bounded(async {
         let Pair { mut tx, driver, mut server, _endpoints, .. } = pair(Http3Options::default()).await;
         let mut client_driver = Box::pin(driver);
         let (rejected, mut notified) = tokio::sync::mpsc::channel(1);
         let (observed, mut confirmed) = tokio::sync::mpsc::channel(1);
         let server_task = tokio::spawn(async move {
-            for (status, length) in [(200, "invalid"), (200, "1, 2"), (103, "invalid"), (204, "invalid")] {
+            for (status, length) in [(200, "invalid"), (200, "1, 2"), (103, "invalid"), (204, "invalid"), (101, "0")] {
                 let resolver = server.accept().await.unwrap().unwrap();
                 let (_, mut stream) = resolver.resolve_request().await.unwrap();
                 while stream.recv_data().await.unwrap().is_some() {}
@@ -1921,7 +1921,7 @@ async fn invalid_response_lengths_signal_message_error_and_preserve_connection()
             drop(stream);
             let _ = server.accept().await;
         });
-        for _ in 0..4 {
+        for _ in 0..5 {
             let error = tx.try_send_request(Request::get("https://localhost/invalid")
                 .body(Full::new(Bytes::new())).unwrap()).await.unwrap_err();
             assert!(!error.error().is_user());
