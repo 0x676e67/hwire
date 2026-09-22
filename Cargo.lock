@@ -713,7 +713,7 @@ dependencies = [
 [[package]]
 name = "http3"
 version = "0.1.1"
-source = "git+https://github.com/0x676e67/http3?rev=07ab243585dc1f92917bf0dc91d8df1af54c0f8f#07ab243585dc1f92917bf0dc91d8df1af54c0f8f"
+source = "git+https://github.com/0x676e67/http3?rev=f023ce35c9f163473894e06b63981413cf9b2b3b#f023ce35c9f163473894e06b63981413cf9b2b3b"
 dependencies = [
  "bytes",
  "fastrand",
@@ -738,7 +738,7 @@ dependencies = [
 [[package]]
 name = "http3-quic"
 version = "0.1.1"
-source = "git+https://github.com/0x676e67/http3?rev=07ab243585dc1f92917bf0dc91d8df1af54c0f8f#07ab243585dc1f92917bf0dc91d8df1af54c0f8f"
+source = "git+https://github.com/0x676e67/http3?rev=f023ce35c9f163473894e06b63981413cf9b2b3b#f023ce35c9f163473894e06b63981413cf9b2b3b"
 dependencies = [
  "bytes",
  "futures-util",

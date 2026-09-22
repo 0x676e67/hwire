@@ -128,7 +128,9 @@ pub struct Builder<E> {
 
 /// Closes the QUIC connection if the handshake is abandoned before the opener
 /// moves into the connection task.
-struct HandshakeGuard<O: quic::OpenStreams<Bytes>>(Option<O>);
+struct HandshakeGuard<O>(Option<O>)
+where
+    O: quic::OpenStreams<Bytes>;
 
 // ===== impl SendRequest =====
 
@@ -385,9 +387,7 @@ impl<E> Builder<E> {
             done,
         );
 
-        self.exec.execute_h3_future(H3ClientFuture::Task {
-            task: Box::pin(task),
-        });
+        self.exec.execute_h3_future(H3ClientFuture::Task { task });
 
         let exchange: Box<dyn Exchange<B>> = {
             let shared = shared.clone();
@@ -483,7 +483,10 @@ where
 
 // ===== impl HandshakeGuard =====
 
-impl<O: quic::OpenStreams<Bytes>> Drop for HandshakeGuard<O> {
+impl<O> Drop for HandshakeGuard<O>
+where
+    O: quic::OpenStreams<Bytes>,
+{
     fn drop(&mut self) {
         if let Some(opener) = self.0.as_mut() {
             opener.close(Code::H3_NO_ERROR.value(), b"HTTP/3 handshake canceled");

@@ -446,7 +446,11 @@ impl Drop for Registration {
 
 impl<S, R> Unpin for Driver<S, R> {}
 
-impl<S: quic::SendDatagram, R: quic::RecvDatagram> Future for Driver<S, R> {
+impl<S, R> Future for Driver<S, R>
+where
+    S: quic::SendDatagram,
+    R: quic::RecvDatagram,
+{
     type Output = std::result::Result<(), (Code, Error)>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {

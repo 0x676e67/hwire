@@ -699,6 +699,7 @@ async fn connect_flush_and_half_close_preserve_incoming_bytes() {
             ..
         } = pair(Http3Options::default()).await;
         let mut client_driver = Box::pin(driver);
+        let (first, received_first) = oneshot::channel();
         let server_task = tokio::spawn(async move {
             let resolver = server.accept().await.unwrap().unwrap();
             let stream_task = tokio::spawn(async move {
@@ -706,15 +707,19 @@ async fn connect_flush_and_half_close_preserve_incoming_bytes() {
                 assert_eq!(request.method(), http::Method::CONNECT);
                 stream.send_response(Response::new(())).await.unwrap();
                 let mut size = 0;
+                let mut first = Some(first);
                 while let Some(mut chunk) = stream.recv_data().await.unwrap() {
                     size += chunk.remaining();
+                    if let Some(first) = first.take() {
+                        first.send(()).unwrap();
+                    }
                     while chunk.has_remaining() {
                         assert_eq!(chunk.get_u8(), 9);
                     }
                 }
                 assert_eq!(size, 128 * 1024);
                 stream
-                    .send_data(Bytes::from_static(b"received FIN"))
+                    .send_data(Bytes::from(vec![7; 128 * 1024]))
                     .await
                     .unwrap();
                 stream.finish().await.unwrap();
@@ -733,12 +738,15 @@ async fn connect_flush_and_half_close_preserve_incoming_bytes() {
         assert_eq!(response.status(), 200);
         let mut tunnel = wreq_proto::upgrade::on(&mut response).await.unwrap();
         drop(tx);
-        tunnel.write_all(&vec![9; 128 * 1024]).await.unwrap();
+        tunnel.write_all(&vec![9; 1024]).await.unwrap();
+        // Accepted DATA must progress while no further write/flush command exists.
+        received_first.await.unwrap();
+        tunnel.write_all(&vec![9; 127 * 1024]).await.unwrap();
         tunnel.flush().await.unwrap();
         tunnel.shutdown().await.unwrap();
         let mut bytes = Vec::new();
         tunnel.read_to_end(&mut bytes).await.unwrap();
-        assert_eq!(bytes, b"received FIN");
+        assert_eq!(bytes, vec![7; 128 * 1024]);
         client_driver.as_mut().graceful_shutdown();
         client_driver.await.unwrap();
         server_task.await.unwrap();
