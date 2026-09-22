@@ -32,8 +32,10 @@ use crate::{rt::quic, Error, Result};
 /// Packets queued per session and direction. The limits are also stated on
 /// `conn::http3::datagram::Sender::try_send`.
 const PACKETS: usize = 64;
+
 /// Bytes queued per session and direction.
 const SESSION_BYTES: usize = 128 * 1024;
+
 /// Bytes queued per connection and direction.
 const CONNECTION_BYTES: usize = 1024 * 1024;
 
@@ -104,13 +106,10 @@ struct Driver<S, R> {
 pub enum SendErrorKind {
     /// HTTP Datagrams or the QUIC Datagram transport are unavailable.
     Unavailable,
-
     /// The payload exceeds the current transport or local buffer limit.
     TooLarge,
-
     /// The bounded session or connection queue has no capacity.
     Full,
-
     /// The request send half or its connection has closed.
     Closed,
 }
@@ -245,7 +244,8 @@ impl Registry {
             || size > SESSION_BYTES - entry.incoming_bytes
             || size > capacity
         {
-            return Ok(()); // Unreliable receive queues drop the newest packet.
+            // Unreliable receive queues drop the newest packet.
+            return Ok(());
         }
         entry.incoming.push_back(payload);
         entry.incoming_bytes += size;
@@ -443,7 +443,6 @@ impl Drop for Registration {
 
 // ===== impl Driver =====
 
-// No field is structurally pinned; the transport methods take `&mut self`.
 impl<S, R> Unpin for Driver<S, R> {}
 
 impl<S: quic::SendDatagram, R: quic::RecvDatagram> Future for Driver<S, R> {

@@ -24,6 +24,7 @@ pub(crate) struct Shared {
     pub(crate) peer_extended_connect: OnceLock<bool>,
     pub(crate) settings_ready: CancellationToken,
     pub(crate) draining: AtomicBool,
+    pub(crate) error: OnceLock<Arc<Error>>,
 
     /// Local admission; closed by a shutdown so waiting requests are returned.
     pub(crate) permits: Semaphore,
@@ -42,8 +43,6 @@ pub(crate) struct Shared {
 
     /// The driver's waker, for drain, shutdown and completion events.
     pub(crate) waker: AtomicWaker,
-
-    pub(crate) error: OnceLock<Arc<Error>>,
 }
 
 /// Keeps the connection open until dropped. A reservation is taken when the

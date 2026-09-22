@@ -56,6 +56,55 @@ pub(super) struct RecvGuard<S: quic::RecvStream> {
     pub(super) code: Code,
 }
 
+// ===== impl SendGuard =====
+
+impl<S: quic::SendStream<Bytes>> Drop for SendGuard<S> {
+    fn drop(&mut self) {
+        if !self.finished {
+            let code = Code::H3_REQUEST_CANCELLED;
+            #[cfg(feature = "http3-datagram")]
+            let code = if self
+                .datagrams
+                .as_ref()
+                .is_some_and(|d| d.invalid.is_cancelled())
+            {
+                Code::H3_DATAGRAM_ERROR
+            } else {
+                code
+            };
+            self.stream.stop_stream(code);
+        }
+    }
+}
+
+// ===== impl RecvGuard =====
+
+impl<S: quic::RecvStream> Drop for RecvGuard<S> {
+    fn drop(&mut self) {
+        if !self.finished {
+            // Late Datagrams after receive cancellation must be discarded,
+            // without canceling an upload that still owns the send direction.
+            // https://www.rfc-editor.org/rfc/rfc9297.html#section-2.1
+            #[cfg(feature = "http3-datagram")]
+            if let Some(datagrams) = &self.datagrams {
+                datagrams.close_recv();
+            }
+            let code = self.code;
+            #[cfg(feature = "http3-datagram")]
+            let code = if self
+                .datagrams
+                .as_ref()
+                .is_some_and(|d| d.invalid.is_cancelled())
+            {
+                Code::H3_DATAGRAM_ERROR
+            } else {
+                code
+            };
+            self.stream.stop_sending(code);
+        }
+    }
+}
+
 /// Runs one request. Errors before the stream opens return the request;
 /// dropping the future before it resolves cancels both directions. `exec`
 /// runs an upload that outlives the response head or a CONNECT tunnel.
@@ -609,53 +658,4 @@ pub(super) async fn cooperate(budget: &mut usize) {
         }
     })
     .await;
-}
-
-// ===== impl SendGuard =====
-
-impl<S: quic::SendStream<Bytes>> Drop for SendGuard<S> {
-    fn drop(&mut self) {
-        if !self.finished {
-            let code = Code::H3_REQUEST_CANCELLED;
-            #[cfg(feature = "http3-datagram")]
-            let code = if self
-                .datagrams
-                .as_ref()
-                .is_some_and(|d| d.invalid.is_cancelled())
-            {
-                Code::H3_DATAGRAM_ERROR
-            } else {
-                code
-            };
-            self.stream.stop_stream(code);
-        }
-    }
-}
-
-// ===== impl RecvGuard =====
-
-impl<S: quic::RecvStream> Drop for RecvGuard<S> {
-    fn drop(&mut self) {
-        if !self.finished {
-            // Late Datagrams after receive cancellation must be discarded,
-            // without canceling an upload that still owns the send direction.
-            // https://www.rfc-editor.org/rfc/rfc9297.html#section-2.1
-            #[cfg(feature = "http3-datagram")]
-            if let Some(datagrams) = &self.datagrams {
-                datagrams.close_recv();
-            }
-            let code = self.code;
-            #[cfg(feature = "http3-datagram")]
-            let code = if self
-                .datagrams
-                .as_ref()
-                .is_some_and(|d| d.invalid.is_cancelled())
-            {
-                Code::H3_DATAGRAM_ERROR
-            } else {
-                code
-            };
-            self.stream.stop_sending(code);
-        }
-    }
 }

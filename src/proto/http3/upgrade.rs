@@ -89,10 +89,12 @@ where
             (Some(registration), Some(state))
         }
     };
+    
     #[cfg(feature = "http3-datagram")]
     let invalid = registration
         .as_ref()
         .map(|registration| registration.0.invalid.clone());
+    
     #[cfg(not(feature = "http3-datagram"))]
     let invalid: Option<CancellationToken> = None;
     let (body, rx) = chan::channel(false);
@@ -107,6 +109,7 @@ where
         #[cfg(feature = "http3-datagram")]
         datagrams: datagrams.clone(),
     };
+    
     let (pending, on_upgrade) = pending();
     let io = Upgraded::new(io, Bytes::new());
     #[cfg(feature = "http3-datagram")]
@@ -116,12 +119,14 @@ where
     } else {
         Some(io)
     };
+    
     #[cfg(not(feature = "http3-datagram"))]
     let io = Some(io);
     if io.is_some() {
         headers.extensions_mut().insert(on_upgrade);
     }
     *headers.version_mut() = http::Version::HTTP_3;
+    
     exec.execute(Box::pin(run(
         send,
         recv,
@@ -164,9 +169,11 @@ async fn run<S, R>(
         })
         .await
     };
+    
     if let (Err(error), Some(mut body)) = (result, body) {
         body.send_error(active.shared().error_or(error));
     }
+    
     #[cfg(feature = "http3-datagram")]
     drop(registration);
     drop(active);
@@ -211,6 +218,7 @@ async fn upload<S: quic::SendStream<Bytes>>(
         }
         cooperate(&mut budget).await;
     }
+    
     if stopped {
         #[cfg(feature = "http3-datagram")]
         if let Some(datagrams) = &send.datagrams {
@@ -249,6 +257,7 @@ async fn download<R: quic::RecvStream>(
         }
         cooperate(&mut budget).await;
     }
+    
     poll_fn(|cx| {
         if sender.poll_closed(cx).is_ready() {
             return Poll::Ready(Err(Error::new_canceled()));
@@ -256,11 +265,13 @@ async fn download<R: quic::RecvStream>(
         recv.stream.poll_recv_trailers(cx).map_err(Error::new_h3)
     })
     .await?;
+    
     recv.finished = true;
     #[cfg(feature = "http3-datagram")]
     if let Some(datagrams) = &recv.datagrams {
         datagrams.close_recv();
     }
+    
     // Dropping the sender delivers EOF to the tunnel reader.
     body.take();
     Ok(())
