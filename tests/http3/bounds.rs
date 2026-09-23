@@ -6,7 +6,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use wreq_proto::rt::quic::{self as rt, OpenStreams};
+use hwire::rt::quic::{self as rt, OpenStreams};
 
 use super::*;
 

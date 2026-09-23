@@ -22,9 +22,9 @@
 //!
 //! ```
 //! use http_body_util::BodyExt as _;
-//! use wreq_proto::body::Incoming;
+//! use hwire::body::Incoming;
 //!
-//! async fn read_body(mut body: Incoming) -> Result<(), wreq_proto::Error> {
+//! async fn read_body(mut body: Incoming) -> Result<(), hwire::Error> {
 //!     while let Some(frame) = body.frame().await {
 //!         let frame = frame?;
 //!
@@ -49,10 +49,10 @@
 //! ```
 //! use http_body_util::BodyExt as _;
 //! use bytes::Bytes;
-//! use wreq_proto::body::Incoming;
+//! use hwire::body::Incoming;
 //!
 //! /// Consider using `Limited` if the body is untrusted.
-//! async fn read_entire_body(body: Incoming) -> Result<Bytes, wreq_proto::Error> {
+//! async fn read_entire_body(body: Incoming) -> Result<Bytes, hwire::Error> {
 //!     Ok(body.collect().await?.to_bytes())
 //! }
 //! ```

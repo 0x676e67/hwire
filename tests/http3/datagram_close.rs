@@ -9,7 +9,7 @@ use futures_util::{
     future::{poll_fn, BoxFuture},
     task::AtomicWaker,
 };
-use wreq_proto::rt::quic::{self as rt, DatagramConnection, OpenStreams};
+use hwire::rt::quic::{self as rt, DatagramConnection, OpenStreams};
 
 use super::*;
 
@@ -240,7 +240,7 @@ async fn check_cause(response_started: bool) {
     .await;
 }
 
-fn assert_datagram_cause(error: &wreq_proto::Error) {
+fn assert_datagram_cause(error: &hwire::Error) {
     use std::error::Error;
     let mut source = error.source();
     while let Some(cause) = source {
@@ -364,7 +364,7 @@ async fn late_datagram_after_response_drop_preserves_upload() {
 async fn progress<F, D>(future: F, driver: &mut D, jobs: &Jobs) -> F::Output
 where
     F: Future,
-    D: Future<Output = Result<(), wreq_proto::Error>> + Unpin,
+    D: Future<Output = Result<(), hwire::Error>> + Unpin,
 {
     let mut future = std::pin::pin!(future);
     poll_fn(|cx| {

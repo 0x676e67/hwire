@@ -10,8 +10,8 @@ use std::{
 
 use bytes::{Buf, Bytes};
 use futures_util::task::AtomicWaker;
+use hwire::rt::quic::{self, BidiStream, Connection, OpenStreams, RecvStream, SendStream};
 use tokio::sync::Notify;
-use wreq_proto::rt::quic::{self, BidiStream, Connection, OpenStreams, RecvStream, SendStream};
 
 #[derive(Clone, Default)]
 pub struct Pause(Arc<State>);
