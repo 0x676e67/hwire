@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790126568597,
+  "lastUpdate": 1790127218832,
   "repoUrl": "https://github.com/0x676e67/hwire",
   "entries": {
     "end_to_end": [
@@ -11015,6 +11015,114 @@ window.BENCHMARK_DATA = {
             "name": "http2_parallel_x10_res_1mb",
             "value": 5689071,
             "range": "± 73782.60",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gngppz@gmail.com",
+            "name": "0x676e67",
+            "username": "0x676e67"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "70617bcb899fed1386370bfe2e947ad9a658670a",
+          "message": "Merge pull request #84 from 0x676e67/fix/release-plz-http3-baseline\n\nfix(ci): patch HTTP/3 for release-plz baseline",
+          "timestamp": "2026-09-23T09:30:17+08:00",
+          "tree_id": "05c00cbb4e10e98f2817099cdd4ec088fff9f517",
+          "url": "https://github.com/0x676e67/hwire/commit/70617bcb899fed1386370bfe2e947ad9a658670a"
+        },
+        "date": 1790127218182,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "http1_consecutive_x1_both_100kb",
+            "value": 53454,
+            "range": "± 839.10",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http1_consecutive_x1_both_10mb",
+            "value": 3418482,
+            "range": "± 351843.41",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http1_consecutive_x1_empty",
+            "value": 18212,
+            "range": "± 185.87",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http1_consecutive_x1_req_10b",
+            "value": 19168,
+            "range": "± 203.74",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_consecutive_x1_empty",
+            "value": 22945,
+            "range": "± 607.32",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_consecutive_x1_req_100kb",
+            "value": 75694,
+            "range": "± 1196.09",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_consecutive_x1_req_10b",
+            "value": 40999914,
+            "range": "± 3540.54",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_empty",
+            "value": 61257,
+            "range": "± 771.25",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_req_10kb_100_chunks",
+            "value": 15026365,
+            "range": "± 16425170.24",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_req_10kb_100_chunks_adaptive_window",
+            "value": 6826471,
+            "range": "± 33680351.91",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_req_10kb_100_chunks_max_window",
+            "value": 6671897,
+            "range": "± 350299.01",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_req_10mb",
+            "value": 87999472,
+            "range": "± 21845.33",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_res_10mb",
+            "value": 47652844,
+            "range": "± 198689.67",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_res_1mb",
+            "value": 4607464,
+            "range": "± 72608.67",
             "unit": "ns/iter"
           }
         ]
