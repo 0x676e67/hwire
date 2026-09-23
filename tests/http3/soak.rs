@@ -92,9 +92,7 @@ async fn cancellation_and_close() {
         async {
             hwire::conn::http3::Builder::new(exec.clone())
                 .options(Http3Options::builder().send_grease(false).build())
-                .handshake::<_, super::ClientBody>(crate::native::Connection::new(
-                    client_quic.clone(),
-                ))
+                .handshake(crate::native::Connection::new(client_quic.clone()))
                 .await
                 .unwrap()
         },
@@ -105,7 +103,7 @@ async fn cancellation_and_close() {
                 .unwrap()
         }
     );
-    let client_driver = tokio::spawn(driver);
+    let mut client_driver = Box::pin(driver);
     let completed = Arc::new(AtomicUsize::new(0));
     let reset = Arc::new(AtomicUsize::new(0));
     let closing = Arc::new(AtomicBool::new(false));
@@ -255,9 +253,9 @@ async fn cancellation_and_close() {
     }
     closing.store(true, Ordering::Release);
     drop(tx);
+    client_driver.as_mut().graceful_shutdown();
     timeout(Duration::from_secs(20), client_driver)
         .await
-        .unwrap()
         .unwrap()
         .unwrap();
     timeout(Duration::from_secs(20), server_task)

@@ -1,3 +1,6 @@
+//! Adapts transports written against http3's own `quic` traits to the
+//! [`rt::quic`](super) contract.
+
 use std::task::{Context, Poll};
 
 use bytes::Buf;

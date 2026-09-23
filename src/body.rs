@@ -64,7 +64,7 @@
 //! [`BodyExt`]: https://docs.rs/http-body-util/latest/http_body_util/trait.BodyExt.html
 //! [`http_body::Body`]: https://docs.rs/http-body
 
-mod chan;
+pub(crate) mod chan;
 mod incoming;
 mod length;
 

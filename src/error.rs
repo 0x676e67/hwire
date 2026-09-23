@@ -384,6 +384,7 @@ impl Error {
         Error::new_user(User::InvalidRequest).with(cause)
     }
 
+    /// An HTTP/3 protocol or QUIC transport error.
     #[cfg(feature = "http3")]
     pub(super) fn new_h3<E: Into<Cause>>(cause: E) -> Error {
         Error::new(Kind::Http3).with(cause)

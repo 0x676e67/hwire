@@ -385,10 +385,17 @@ async fn measure(
     )
     .await;
     drop(sender);
-    timeout(Duration::from_secs(10), driver)
+    // All requests and timing are complete. Both clients keep the connection
+    // alive until its driver or connection handle is dropped.
+    driver.abort();
+    match timeout(Duration::from_secs(10), driver)
         .await
-        .unwrap()
-        .unwrap();
+        .expect("client driver shutdown timed out")
+    {
+        Ok(()) => {}
+        Err(error) if error.is_cancelled() => {}
+        Err(error) => panic!("client driver failed: {error}"),
+    }
     assert_eq!(
         timeout(Duration::from_secs(10), server_task)
             .await
