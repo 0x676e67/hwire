@@ -4,17 +4,17 @@
 [![License](https://img.shields.io/crates/l/hwire.svg)][license]
 [![Crates.io](https://img.shields.io/crates/v/hwire.svg)](https://crates.io/crates/hwire)
 
-An HTTP library written in Rust.
+Async HTTP, down to the wire.
 
 ## Features
+
 
 - [HTTP/1](https://www.rfc-editor.org/rfc/rfc9112.html) and [HTTP/2](https://www.rfc-editor.org/rfc/rfc9113.html) implementations.
 - Optional [HTTP/3](https://www.rfc-editor.org/rfc/rfc9114.html) over [QUIC](https://www.rfc-editor.org/rfc/rfc9000.html) implementations. 
 - Streaming bodies and trailers with backpressure.
 - [HTTP Upgrade](https://www.rfc-editor.org/rfc/rfc9110.html#name-upgrade) and [CONNECT](https://www.rfc-editor.org/rfc/rfc9110.html#name-connect) tunnels, including [HTTP/2 Extended CONNECT](https://www.rfc-editor.org/rfc/rfc8441.html).
 - Pluggable executor, timer and transport interfaces implemented by the caller.
-- Optional tracing with no default Cargo features.
-- Tested against [Hyper] servers.
+- Carries forward [Hyper]'s client-side implementation.
 
 ## Usage
 
@@ -47,10 +47,6 @@ Licensed under either of Apache License, Version 2.0 ([LICENSE][license] or [htt
 ## Contribution
 
 Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in the work by you, as defined in the [Apache-2.0][license] license, shall be licensed as above, without any additional terms or conditions.
-
-## Accolades
-
-A hard fork of [Hyper].
 
 [Hyper]: https://github.com/hyperium/hyper
 [protocol-api]: https://docs.rs/hwire
