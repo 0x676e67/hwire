@@ -1,0 +1,58 @@
+# hwire
+
+[![CI](https://github.com/0x676e67/hwire/actions/workflows/ci.yml/badge.svg)](https://github.com/0x676e67/hwire/actions/workflows/ci.yml)
+[![License](https://img.shields.io/crates/l/hwire.svg)][license]
+[![Crates.io](https://img.shields.io/crates/v/hwire.svg)](https://crates.io/crates/hwire)
+
+Async HTTP, down to the wire.
+
+## Features
+
+
+- [HTTP/1](https://www.rfc-editor.org/rfc/rfc9112.html) and [HTTP/2](https://www.rfc-editor.org/rfc/rfc9113.html) implementations.
+- Optional [HTTP/3](https://www.rfc-editor.org/rfc/rfc9114.html) over [QUIC](https://www.rfc-editor.org/rfc/rfc9000.html) implementations. 
+- Streaming bodies and trailers with backpressure.
+- [HTTP Upgrade](https://www.rfc-editor.org/rfc/rfc9110.html#name-upgrade) and [CONNECT](https://www.rfc-editor.org/rfc/rfc9110.html#name-connect) tunnels, including [HTTP/2 Extended CONNECT](https://www.rfc-editor.org/rfc/rfc8441.html).
+- Pluggable executor, timer and transport interfaces implemented by the caller.
+- Carries forward [Hyper]'s client-side implementation.
+
+## Usage
+
+Add the protocol crate to `Cargo.toml`:
+
+```toml
+[dependencies]
+hwire = "0.2"
+```
+
+The client APIs are organized by protocol:
+
+```rust
+use hwire::conn::{http1, http2};
+
+fn main() {
+    // ...
+}
+```
+
+## Low-level
+
+**hwire** handles HTTP protocol details, leaving runtime and transport to its callers; [wreq] provides a ready-to-use client.
+
+## Documentation
+
+- [Protocol API][protocol-api]
+- [Runtime contracts](https://docs.rs/hwire/latest/hwire/rt/)
+
+## License
+
+Licensed under either of Apache License, Version 2.0 ([LICENSE][license] or [http://www.apache.org/licenses/LICENSE-2.0](http://www.apache.org/licenses/LICENSE-2.0)).
+
+## Contribution
+
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in the work by you, as defined in the [Apache-2.0][license] license, shall be licensed as above, without any additional terms or conditions.
+
+[Hyper]: https://github.com/hyperium/hyper
+[wreq]: https://github.com/0x676e67/wreq
+[protocol-api]: https://docs.rs/hwire
+[license]: ./LICENSE

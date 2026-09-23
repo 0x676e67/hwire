@@ -1,8 +1,65 @@
 use bytes::BytesMut;
 use http::{
+    header::{
+        HeaderName, HeaderValue, ValueIter, CONNECTION, CONTENT_LENGTH, TE, TRANSFER_ENCODING,
+        UPGRADE,
+    },
     HeaderMap, Method,
-    header::{CONTENT_LENGTH, HeaderValue, ValueIter},
 };
+
+// List of connection headers from RFC 9110 Section 7.6.1
+//
+// TE headers are allowed in HTTP/2 or HTTP/3 requests as long as the value is "trailers", so
+// they're tested separately.
+static CONNECTION_HEADERS: [HeaderName; 4] = [
+    HeaderName::from_static("keep-alive"),
+    HeaderName::from_static("proxy-connection"),
+    TRANSFER_ENCODING,
+    UPGRADE,
+];
+
+pub(super) fn strip_connection_headers(headers: &mut HeaderMap, is_request: bool) {
+    for header in &CONNECTION_HEADERS {
+        if headers.remove(header).is_some() {
+            warn!(
+                "Connection header illegal in HTTP/2 or HTTP/3: {}",
+                header.as_str()
+            );
+        }
+    }
+
+    if is_request {
+        if headers
+            .get(TE)
+            .is_some_and(|te_header| te_header != "trailers")
+        {
+            warn!("TE headers not set to \"trailers\" are illegal in HTTP/2 or HTTP/3 requests");
+            headers.remove(TE);
+        }
+    } else if headers.remove(TE).is_some() {
+        warn!("TE headers illegal in HTTP/2 or HTTP/3 responses");
+    }
+
+    if let Some(header) = headers.remove(CONNECTION) {
+        warn!(
+            "Connection header illegal in HTTP/2 or HTTP/3: {}",
+            CONNECTION.as_str()
+        );
+
+        if let Ok(header_contents) = header.to_str() {
+            // A `Connection` header may have a comma-separated list of names of other headers that
+            // are meant for only this specific connection.
+            //
+            // Iterate these names and remove them as headers. Connection-specific headers are
+            // forbidden in HTTP/2 and HTTP/3, as that information has been moved into frame types
+            // of the multiplexed protocol.
+            for name in header_contents.split(',') {
+                let name = name.trim();
+                headers.remove(name);
+            }
+        }
+    }
+}
 
 #[inline]
 pub(super) fn connection_keep_alive(value: &HeaderValue) -> bool {
@@ -12,6 +69,16 @@ pub(super) fn connection_keep_alive(value: &HeaderValue) -> bool {
 #[inline]
 pub(super) fn connection_close(value: &HeaderValue) -> bool {
     connection_has(value, "close")
+}
+
+// Returns true if any `Connection` header field carries a `close` token.
+// A message may have more than one `Connection` header line, so all of them
+// must be inspected (`get`/`connection_close` alone only sees the first).
+pub(super) fn connection_any_close(headers: &http::HeaderMap) -> bool {
+    headers
+        .get_all(http::header::CONNECTION)
+        .iter()
+        .any(connection_close)
 }
 
 fn connection_has(value: &HeaderValue, needle: &str) -> bool {
@@ -39,13 +106,10 @@ pub(super) fn content_length_parse_all_values(values: ValueIter<'_, HeaderValue>
     for h in values {
         if let Ok(line) = h.to_str() {
             for v in line.split(',') {
-                if let Some(n) = from_digits(v.trim().as_bytes()) {
-                    if content_length.is_none() {
-                        content_length = Some(n)
-                    } else if content_length != Some(n) {
-                        return None;
-                    }
-                } else {
+                let n = from_digits(v.trim().as_bytes())?;
+                if content_length.is_none() {
+                    content_length = Some(n)
+                } else if content_length != Some(n) {
                     return None;
                 }
             }

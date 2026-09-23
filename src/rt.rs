@@ -1,20 +1,27 @@
 //! Runtime components
 //!
-//! The traits and types within this module are used to allow plugging in
-//! runtime types. These include:
+//! This module provides traits and types that allow hwire to be runtime-agnostic.
+//! By abstracting over async runtimes, hwire can work with different executors, timers, and IO
+//! transports.
 //!
-//! - Executors
-//! - Timers
-//! - IO transports
+//! The main runtime components are:
+//!
+//! - **Executors**: Traits for spawning and running futures, enabling integration with any async
+//!   runtime.
+//! - **Timers**: Abstractions for sleeping and scheduling tasks, allowing time-based operations to
+//!   be runtime-independent.
+//! - **IO Transports**: [`tokio::io::AsyncRead`] and [`tokio::io::AsyncWrite`] provide asynchronous
+//!   reading and writing; applications provide adapters for other IO backends.
+//!
+//! By implementing these traits, you can customize how hwire interacts with your chosen
+//! runtime environment. Concrete runtime adapters in this repository are test utilities only.
 
 pub mod bounds;
+#[cfg(feature = "http3")]
+pub mod quic;
 mod timer;
-mod tokio;
 
-pub use self::{
-    timer::{Sleep, Time, Timer},
-    tokio::{TokioExecutor, TokioTimer},
-};
+pub use self::timer::{Sleep, Time, Timer};
 
 /// An executor of futures.
 ///

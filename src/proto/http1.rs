@@ -7,7 +7,6 @@ mod io;
 
 pub(crate) mod conn;
 pub(crate) mod dispatch;
-pub mod ext;
 pub(crate) mod role;
 
 use bytes::BytesMut;
@@ -19,6 +18,7 @@ use super::{BodyLength, MessageHead};
 use crate::{
     body::DecodedLength,
     error::{Error, Parse, Result},
+    ext::OnInformational,
 };
 
 pub(crate) trait Http1Transaction {
@@ -56,6 +56,7 @@ pub(crate) struct ParseContext<'a> {
     h1_parser_config: &'a ParserConfig,
     h1_max_headers: Option<usize>,
     h09_responses: bool,
+    on_informational: &'a mut Option<OnInformational>,
 }
 
 /// Passed to Http1Transaction::encode
@@ -99,7 +100,7 @@ pub struct Http1OptionsBuilder {
 /// responses, controlling header handling, buffer sizes, and more. Most settings are optional and
 /// have reasonable defaults.
 #[non_exhaustive]
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
 pub struct Http1Options {
     /// Enable support for HTTP/0.9 responses.
     pub h09_responses: bool,

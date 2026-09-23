@@ -4,8 +4,7 @@
 extern crate test;
 
 use bytes::Buf;
-use futures_util::stream;
-use futures_util::StreamExt;
+use futures_util::{stream, StreamExt};
 use http_body::Frame;
 use http_body_util::{BodyExt, StreamBody};
 

@@ -5,7 +5,7 @@ use std::{
     marker::PhantomData,
     pin::Pin,
     sync::Arc,
-    task::{Context, Poll, ready},
+    task::{ready, Context, Poll},
 };
 
 use http::{Request, Response};
@@ -13,15 +13,15 @@ use http_body::Body;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::{
-    Result,
     body::Incoming,
     dispatch::{self, TrySendError},
     error::{BoxError, Error},
     proto::{
         self,
-        http2::{Http2Options, ping},
+        http2::{ping, Http2Options},
     },
-    rt::{Time, Timer, bounds::Http2ClientConnExec},
+    rt::{bounds::Http2ClientConnExec, Time, Timer},
+    Result,
 };
 
 /// The sender side of an established connection.
@@ -42,6 +42,15 @@ impl<B> Clone for SendRequest<B> {
 ///
 /// In most cases, this should just be spawned into an executor, so that it
 /// can process incoming and outgoing messages, notice hangups, and the like.
+///
+/// # Drop behavior
+///
+/// Dropping this future stops request dispatch and cancels requests still waiting
+/// to be dispatched. Requests and response bodies already handed to background
+/// tasks can continue while the executor runs, so the underlying I/O may remain open.
+///
+/// For graceful shutdown, finish outstanding requests and response bodies, drop all
+/// [`SendRequest`] handles, and let the executor keep driving the background tasks.
 #[must_use = "futures do nothing unless polled"]
 pub struct Connection<T, B, E>
 where
@@ -83,6 +92,8 @@ impl<B> SendRequest<B> {
 
     /// Waits until the dispatcher is ready
     ///
+    /// # Errors
+    ///
     /// If the associated connection is closed, this returns an Error.
     #[inline]
     pub async fn ready(&mut self) -> Result<()> {
@@ -116,10 +127,20 @@ where
     ///
     /// Returns a future that if successful, yields the `Response`.
     ///
-    /// # Error
+    /// # Errors
     ///
     /// If there was an error before trying to serialize the request to the
     /// connection, the message will be returned as part of this error.
+    ///
+    /// # Cancel safety
+    ///
+    /// Drop the returned future to cancel an in-flight request. If a stream has
+    /// been opened, cancellation resets it with `RST_STREAM` and the `CANCEL`
+    /// error code ([RFC 9113 §7](https://www.rfc-editor.org/rfc/rfc9113.html#section-7)).
+    /// The connection remains usable for other current and subsequent requests.
+    /// Keep driving the connection and its background tasks so the reset can
+    /// reach the peer.
+    #[allow(clippy::result_large_err)]
     pub fn try_send_request(
         &mut self,
         req: Request<B>,
@@ -168,6 +189,45 @@ where
     }
 }
 
+impl<T, B, E> Connection<T, B, E>
+where
+    T: AsyncRead + AsyncWrite + Unpin + 'static,
+    B: Body + Unpin + 'static,
+    B::Data: Send,
+    B::Error: Into<BoxError>,
+    E: Http2ClientConnExec<B, T> + Unpin,
+{
+    /// Returns whether the server enabled [extended CONNECT][1].
+    ///
+    /// Reflects the current [`SETTINGS_ENABLE_CONNECT_PROTOCOL`][2] value received from the peer.
+    ///
+    /// [1]: https://datatracker.ietf.org/doc/html/rfc8441#section-4
+    /// [2]: https://datatracker.ietf.org/doc/html/rfc8441#section-3
+    pub fn is_extended_connect_protocol_enabled(&self) -> bool {
+        self.inner.1.is_extended_connect_protocol_enabled()
+    }
+
+    /// Returns the current maximum send stream count.
+    ///
+    /// This setting is configured in a [`SETTINGS_MAX_CONCURRENT_STREAMS` parameter][1] in a
+    /// `SETTINGS` frame, and may change throughout the connection lifetime.
+    ///
+    /// [1]: https://datatracker.ietf.org/doc/html/rfc7540#section-5.1.2
+    pub fn current_max_send_streams(&self) -> usize {
+        self.inner.1.current_max_send_streams()
+    }
+
+    /// Returns the current maximum receive stream count.
+    ///
+    /// This setting is configured in a [`SETTINGS_MAX_CONCURRENT_STREAMS` parameter][1] in a
+    /// `SETTINGS` frame, and may change throughout the connection lifetime.
+    ///
+    /// [1]: https://datatracker.ietf.org/doc/html/rfc7540#section-5.1.2
+    pub fn current_max_recv_streams(&self) -> usize {
+        self.inner.1.current_max_recv_streams()
+    }
+}
+
 // ===== impl Builder
 
 impl<Ex> Builder<Ex>
@@ -186,23 +246,29 @@ where
 
     /// Provide a timer to execute background HTTP2 tasks.
     #[inline]
-    pub fn timer<M>(&mut self, timer: M)
+    pub fn timer<M>(mut self, timer: M) -> Self
     where
         M: Timer + Send + Sync + 'static,
     {
         self.timer = Time::Timer(Arc::new(timer));
+        self
     }
 
     /// Provide a options configuration for the HTTP/2 connection.
     #[inline]
-    pub fn options(&mut self, opts: Http2Options) {
+    pub fn options(mut self, opts: Http2Options) -> Self {
         self.opts = opts;
+        self
     }
 
     /// Constructs a connection with the configured options and IO.
     ///
     /// Note, if [`Connection`] is not `await`-ed, [`SendRequest`] will
     /// do nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the HTTP/2 connection handshake fails.
     pub async fn handshake<T, B>(self, io: T) -> Result<(SendRequest<B>, Connection<T, B, Ex>)>
     where
         T: AsyncRead + AsyncWrite + Unpin,
@@ -219,7 +285,8 @@ where
             .initial_max_send_streams(self.opts.initial_max_send_streams)
             .initial_window_size(self.opts.initial_window_size)
             .initial_connection_window_size(self.opts.initial_conn_window_size)
-            .max_send_buffer_size(self.opts.max_send_buffer_size);
+            .max_send_buffer_size(self.opts.max_send_buffer_size)
+            .max_local_error_reset_streams(self.opts.max_local_error_reset_streams);
         if let Some(id) = self.opts.initial_stream_id {
             builder.initial_stream_id(id);
         }
@@ -228,6 +295,9 @@ where
         }
         if let Some(max) = self.opts.max_concurrent_reset_streams {
             builder.max_concurrent_reset_streams(max);
+        }
+        if let Some(dur) = self.opts.reset_stream_duration {
+            builder.reset_stream_duration(dur);
         }
         if let Some(max) = self.opts.max_concurrent_streams {
             builder.max_concurrent_streams(max);

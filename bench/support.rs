@@ -1,3 +1,4 @@
-mod tokiort;
-
-pub use self::tokiort::*;
+#[path = "../tests/support/rt.rs"]
+pub mod rt;
+#[path = "../tests/support/tokiort.rs"]
+pub mod tokiort;

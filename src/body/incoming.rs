@@ -1,17 +1,13 @@
 use std::{
     fmt,
-    future::Future,
     pin::Pin,
     task::{ready, Context, Poll},
 };
 
 use bytes::Bytes;
-use http::HeaderMap;
 use http_body::{Body, Frame, SizeHint};
-use tokio::sync::{mpsc, oneshot};
-use tokio_util::sync::PollSender;
 
-use super::{watch, DecodedLength};
+use super::{chan, DecodedLength};
 use crate::{proto::http2::ping, Error, Result};
 
 /// A stream of [`Bytes`], used when receiving bodies from the network.
@@ -25,17 +21,20 @@ pub struct Incoming {
 
 enum Kind {
     H1 {
-        want_tx: watch::Sender,
-        data_rx: mpsc::Receiver<Result<Bytes, Error>>,
-        trailers_rx: oneshot::Receiver<HeaderMap>,
+        rx: chan::Receiver,
         content_length: DecodedLength,
-        data_done: bool,
     },
     H2 {
         ping: ping::Recorder,
         recv: http2::RecvStream,
         content_length: DecodedLength,
         data_done: bool,
+    },
+    #[cfg(feature = "http3")]
+    H3 {
+        rx: chan::Receiver,
+        content_length: DecodedLength,
+        done: bool,
     },
     Empty,
 }
@@ -46,19 +45,15 @@ enum Kind {
 ///
 /// ## Body Closing
 ///
-/// Note that the request body will always be closed normally when the sender is dropped (meaning
-/// that the empty terminating chunk will be sent to the remote). If you desire to close the
-/// connection with an incomplete response (e.g. in the case of an error during asynchronous
-/// processing), call the [`Sender::abort()`] method to abort the body in an abnormal fashion.
+/// Note that the request body will always be closed normally when the sender is dropped
+/// (meaning that the empty terminating chunk will be sent to the remote). If you desire to
+/// close the connection with an incomplete response (e.g. in the case of an error during
+/// asynchronous processing), call the [`Sender::abort()`] method to abort the body in an
+/// abnormal fashion.
 ///
 /// [`Body::channel()`]: struct.Body.html#method.channel
 /// [`Sender::abort()`]: struct.Sender.html#method.abort
-#[must_use = "Sender does nothing unless sent on"]
-pub(crate) struct Sender {
-    want_rx: watch::Receiver,
-    data_tx: PollSender<Result<Bytes, Error>>,
-    trailers_tx: Option<oneshot::Sender<HeaderMap>>,
-}
+pub(crate) use super::chan::Sender;
 
 // ===== impl Incoming =====
 
@@ -69,25 +64,25 @@ impl Incoming {
     }
 
     pub(crate) fn h1(content_length: DecodedLength, wanter: bool) -> (Sender, Incoming) {
-        let (data_tx, data_rx) = mpsc::channel(2);
-        let (trailers_tx, trailers_rx) = oneshot::channel();
-        // If wanter is true, `Sender::poll_ready()` won't becoming ready
-        // until the `Body` has been polled for data once.
-        let (want_tx, want_rx) = watch::channel(wanter);
-
+        let (tx, rx) = chan::channel(wanter);
         (
-            Sender {
-                want_rx,
-                data_tx: PollSender::new(data_tx),
-                trailers_tx: Some(trailers_tx),
-            },
+            tx,
             Incoming {
-                kind: Kind::H1 {
-                    want_tx,
-                    data_rx,
-                    trailers_rx,
+                kind: Kind::H1 { content_length, rx },
+            },
+        )
+    }
+
+    #[cfg(feature = "http3")]
+    pub(crate) fn h3(content_length: DecodedLength) -> (Sender, Self) {
+        let (tx, rx) = chan::channel(false);
+        (
+            tx,
+            Self {
+                kind: Kind::H3 {
+                    rx,
                     content_length,
-                    data_done: false,
+                    done: false,
                 },
             },
         )
@@ -117,6 +112,7 @@ impl Incoming {
 
 impl Body for Incoming {
     type Data = Bytes;
+
     type Error = Error;
 
     fn poll_frame(
@@ -125,36 +121,14 @@ impl Body for Incoming {
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
         match self.kind {
             Kind::H1 {
-                ref want_tx,
-                ref mut data_rx,
-                ref mut trailers_rx,
+                ref mut rx,
                 ref mut content_length,
-                ref mut data_done,
             } => {
-                want_tx.ready();
-
-                if !*data_done {
-                    match ready!(data_rx.poll_recv(cx)) {
-                        Some(Ok(chunk)) => {
-                            content_length.sub_if(chunk.len() as u64);
-                            return Poll::Ready(Some(Ok(Frame::data(chunk))));
-                        }
-                        Some(Err(err)) => return Poll::Ready(Some(Err(err))),
-                        None => {
-                            // fall through to trailers
-                            *data_done = true;
-                        }
-                    }
+                if let Some(chunk) = ready!(rx.poll_next(cx)?) {
+                    content_length.sub_if(chunk.len() as u64);
+                    return Poll::Ready(Some(Ok(Frame::data(chunk))));
                 }
-
-                // check trailers after data is terminated
-                if !trailers_rx.is_terminated() {
-                    if let Ok(trailers) = ready!(Pin::new(trailers_rx).poll(cx)) {
-                        return Poll::Ready(Some(Ok(Frame::trailers(trailers))));
-                    }
-                }
-
-                Poll::Ready(None)
+                Poll::Ready(rx.take_trailers().map(Frame::trailers).map(Ok))
             }
             Kind::H2 {
                 ref ping,
@@ -205,6 +179,30 @@ impl Body for Incoming {
                     }
                 }
             }
+            #[cfg(feature = "http3")]
+            Kind::H3 {
+                ref mut rx,
+                ref mut content_length,
+                ref mut done,
+            } => {
+                if *done {
+                    return Poll::Ready(None);
+                }
+                match ready!(rx.poll_next(cx)) {
+                    Some(Ok(data)) => {
+                        content_length.sub_if(data.len() as u64);
+                        Poll::Ready(Some(Ok(Frame::data(data))))
+                    }
+                    Some(Err(error)) => {
+                        *done = true;
+                        Poll::Ready(Some(Err(error)))
+                    }
+                    None => {
+                        *done = true;
+                        Poll::Ready(rx.take_trailers().map(Frame::trailers).map(Ok))
+                    }
+                }
+            }
             Kind::Empty => Poll::Ready(None),
         }
     }
@@ -214,6 +212,8 @@ impl Body for Incoming {
         match self.kind {
             Kind::H1 { content_length, .. } => content_length == DecodedLength::ZERO,
             Kind::H2 { recv: ref h2, .. } => h2.is_end_stream(),
+            #[cfg(feature = "http3")]
+            Kind::H3 { done, .. } => done,
             Kind::Empty => true,
         }
     }
@@ -224,6 +224,20 @@ impl Body for Incoming {
             Kind::H1 { content_length, .. } | Kind::H2 { content_length, .. } => content_length
                 .into_opt()
                 .map_or_else(SizeHint::default, SizeHint::with_exact),
+            #[cfg(feature = "http3")]
+            Kind::H3 {
+                content_length,
+                done,
+                ..
+            } => {
+                if done {
+                    SizeHint::with_exact(0)
+                } else {
+                    content_length
+                        .into_opt()
+                        .map_or_else(SizeHint::default, SizeHint::with_exact)
+                }
+            }
             Kind::Empty => SizeHint::with_exact(0),
         }
     }
@@ -240,65 +254,58 @@ impl fmt::Debug for Incoming {
     }
 }
 
-// ===== impl Sender =====
-
-impl Sender {
-    /// Check to see if this `Sender` can send more data.
-    #[inline]
-    pub(crate) fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<()>> {
-        // Check if the receiver end has tried polling for the body yet
-        ready!(self.want_rx.poll_ready(cx)?);
-        self.data_tx
-            .poll_reserve(cx)
-            .map_err(|_| Error::new_closed())
-    }
-
-    /// Send data on this channel.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Err(Bytes)` if the channel could not (currently) accept
-    /// another `Bytes`.
-    ///
-    /// # Panics
-    ///
-    /// If `poll_ready` was not successfully called prior to calling `send_data`, then this method
-    /// will panic.
-    #[inline]
-    pub(crate) fn send_data(&mut self, chunk: Bytes) -> Result<(), Bytes> {
-        self.data_tx.send_item(Ok(chunk)).map_err(|err| {
-            err.into_inner()
-                .expect("value returned")
-                .expect("just sent Ok")
-        })
-    }
-
-    /// Send trailers on this channel.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Err(HeaderMap)` if the channel could not (currently) accept
-    /// another `HeaderMap`.
-    #[inline]
-    pub(crate) fn send_trailers(&mut self, trailers: HeaderMap) -> Result<(), Option<HeaderMap>> {
-        self.trailers_tx
-            .take()
-            .ok_or(None)?
-            .send(trailers)
-            .map_err(Some)
-    }
-
-    /// Send an error on this channel, which will cause the body stream to end with an error.
-    #[inline]
-    pub(crate) fn send_error(&mut self, err: Error) {
-        self.data_tx
-            .get_ref()
-            .map(|sender| sender.try_send(Err(err)));
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    #[cfg(all(feature = "nightly", not(miri)))]
+    extern crate test;
+    #[cfg(all(feature = "nightly", not(miri)))]
+    use std::pin::Pin;
+
+    #[cfg(all(feature = "nightly", not(miri)))]
+    use bytes::Bytes;
+
+    #[cfg(all(feature = "nightly", not(miri)))]
+    #[bench]
+    fn bench_channel_create_and_drop(b: &mut test::Bencher) {
+        b.iter(|| {
+            let _ = test::black_box(Incoming::h1(
+                DecodedLength::CHUNKED,
+                /* wanter = */ false,
+            ));
+        });
+    }
+
+    #[cfg(all(feature = "nightly", not(miri)))]
+    #[bench]
+    fn bench_channel_data_handoff(b: &mut test::Bencher) {
+        let (mut tx, mut body) = Incoming::h1(DecodedLength::CHUNKED, /* wanter = */ false);
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+
+        b.iter(|| {
+            assert!(tx.poll_ready(&mut cx).is_ready());
+            tx.send_data(Bytes::from_static(b"hello world")).unwrap();
+            let frame = match Pin::new(&mut body).poll_frame(&mut cx) {
+                Poll::Ready(Some(Ok(frame))) => frame,
+                unexpected => panic!("unexpected body poll: {unexpected:?}"),
+            };
+            test::black_box(frame);
+        });
+    }
+
+    #[cfg(all(feature = "nightly", not(miri)))]
+    #[bench]
+    fn bench_channel_want_transition(b: &mut test::Bencher) {
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+
+        b.iter(|| {
+            let (mut tx, mut body) = Incoming::h1(DecodedLength::CHUNKED, /* wanter = */ true);
+            assert!(tx.poll_ready(&mut cx).is_pending());
+            assert!(Pin::new(&mut body).poll_frame(&mut cx).is_pending());
+            assert!(tx.poll_ready(&mut cx).is_ready());
+            let _ = test::black_box((tx, body));
+        });
+    }
+
     use std::{mem, task::Poll};
 
     use http_body_util::BodyExt;
@@ -319,7 +326,7 @@ mod tests {
             std::future::poll_fn(|cx| self.poll_ready(cx)).await
         }
 
-        fn abort(mut self) {
+        pub(crate) fn abort(mut self) {
             self.send_error(Error::new_body_write_aborted());
         }
     }
@@ -330,7 +337,7 @@ mod tests {
         // the size by too much.
 
         let body_size = mem::size_of::<Incoming>();
-        let body_expected_size = mem::size_of::<u64>() * 6;
+        let body_expected_size = mem::size_of::<u64>() * 5;
         assert!(
             body_size <= body_expected_size,
             "Body size = {body_size} <= {body_expected_size}",
@@ -340,7 +347,7 @@ mod tests {
 
         assert_eq!(
             mem::size_of::<Sender>(),
-            mem::size_of::<usize>() * 8,
+            mem::size_of::<usize>() * 2,
             "Sender"
         );
 
@@ -384,7 +391,6 @@ mod tests {
     async fn channel_abort_when_buffer_is_full() {
         let (mut tx, mut rx) = Incoming::channel();
 
-        tx.ready().await.expect("ready");
         tx.send_data("chunk 1".into()).expect("send 1");
         // buffer is full, but can still send abort
         tx.abort();
@@ -402,23 +408,15 @@ mod tests {
         assert!(err.is_body_write_aborted(), "{err:?}");
     }
 
-    #[tokio::test]
-    async fn channel_buffers_two() {
+    #[test]
+    fn channel_buffers_one() {
         let (mut tx, _rx) = Incoming::channel();
 
-        tx.ready().await.expect("ready");
         tx.send_data("chunk 1".into()).expect("send 1");
-        tx.ready().await.expect("ready");
-        tx.send_data("chunk 2".into()).expect("send 2");
 
-        // buffer is now full, poll_ready should not be ready
-        let res = tokio::time::timeout(
-            std::time::Duration::from_millis(100),
-            std::future::poll_fn(|cx| tx.poll_ready(cx)),
-        )
-        .await;
-
-        assert!(res.is_err(), "poll_ready unexpectedly became ready");
+        // buffer is now full
+        let chunk2 = tx.send_data("chunk 2".into()).expect_err("send 2");
+        assert_eq!(chunk2, "chunk 2");
     }
 
     #[tokio::test]

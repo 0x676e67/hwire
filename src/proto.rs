@@ -4,6 +4,8 @@ mod headers;
 
 pub mod http1;
 pub mod http2;
+#[cfg(feature = "http3")]
+pub mod http3;
 
 /// A request line of an incoming request message.
 #[derive(Debug, Default, PartialEq)]

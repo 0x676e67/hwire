@@ -1,5 +1,12 @@
-//! HTTP extensions.
-
+/// A reason phrase in an HTTP/1 response.
+///
+/// # Clients
+///
+/// For clients, a `ReasonPhrase` will be present in the extensions of the `http::Response`
+/// returned for a request if the reason phrase is different from the canonical reason phrase
+/// for the response's status code. For example, if a server returns `HTTP/1.1 200 Awesome`,
+/// the `ReasonPhrase` will be present and contain `Awesome`, but if a server returns `HTTP/1.1
+/// 200 OK`, the response will not contain a `ReasonPhrase`.
 use bytes::Bytes;
 
 /// A reason phrase in an HTTP/1 response.

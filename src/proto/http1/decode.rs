@@ -1,7 +1,7 @@
 use std::{
     error::Error as StdError,
     fmt, io,
-    task::{Context, Poll, ready},
+    task::{ready, Context, Poll},
 };
 
 use bytes::{BufMut, Bytes, BytesMut};
@@ -9,7 +9,7 @@ use http::{HeaderMap, HeaderName, HeaderValue};
 use http_body::Frame;
 
 use self::Kind::{Chunked, Eof, Length};
-use super::{DecodedLength, io::MemRead, role::DEFAULT_MAX_HEADERS};
+use super::{io::MemRead, role::DEFAULT_MAX_HEADERS, DecodedLength};
 
 /// Maximum amount of bytes allowed in chunked extensions.
 ///
@@ -207,13 +207,6 @@ impl Decoder {
                         if trailers_buf.is_some() {
                             trace!("found possible trailers");
 
-                            // decoder enforces that trailers count will not exceed h1_max_headers
-                            if *trailers_cnt >= h1_max_headers {
-                                return Poll::Ready(Err(io::Error::new(
-                                    io::ErrorKind::InvalidData,
-                                    "chunk trailers count overflow",
-                                )));
-                            }
                             match decode_trailers(
                                 &mut trailers_buf.take().expect("Trailer is None"),
                                 *trailers_cnt,
@@ -405,6 +398,7 @@ impl ChunkedState {
         }
         Poll::Ready(Ok(ChunkedState::Size))
     }
+
     fn read_size_lws<R: MemRead>(
         cx: &mut Context<'_>,
         rdr: &mut R,
@@ -421,6 +415,7 @@ impl ChunkedState {
             ))),
         }
     }
+
     fn read_extension<R: MemRead>(
         cx: &mut Context<'_>,
         rdr: &mut R,
@@ -452,6 +447,7 @@ impl ChunkedState {
             } // no supported extensions
         }
     }
+
     fn read_size_lf<R: MemRead>(
         cx: &mut Context<'_>,
         rdr: &mut R,
@@ -503,6 +499,7 @@ impl ChunkedState {
             Poll::Ready(Ok(ChunkedState::BodyCr))
         }
     }
+
     fn read_body_cr<R: MemRead>(
         cx: &mut Context<'_>,
         rdr: &mut R,
@@ -515,6 +512,7 @@ impl ChunkedState {
             ))),
         }
     }
+
     fn read_body_lf<R: MemRead>(
         cx: &mut Context<'_>,
         rdr: &mut R,
@@ -614,6 +612,7 @@ impl ChunkedState {
             }
         }
     }
+
     fn read_end_lf<R: MemRead>(
         cx: &mut Context<'_>,
         rdr: &mut R,
@@ -650,7 +649,7 @@ fn decode_trailers(buf: &mut BytesMut, count: usize) -> Result<HeaderMap, io::Er
                     Err(_) => {
                         return Err(io::Error::new(
                             io::ErrorKind::InvalidInput,
-                            format!("Invalid header name: {:?}", &header),
+                            format!("Invalid header name: {:?}", header),
                         ));
                     }
                 };
@@ -660,12 +659,12 @@ fn decode_trailers(buf: &mut BytesMut, count: usize) -> Result<HeaderMap, io::Er
                     Err(_) => {
                         return Err(io::Error::new(
                             io::ErrorKind::InvalidInput,
-                            format!("Invalid header value: {:?}", &header),
+                            format!("Invalid header value: {:?}", header),
                         ));
                     }
                 };
 
-                trailers.insert(name, value);
+                trailers.append(name, value);
             }
 
             Ok(trailers)
@@ -1078,7 +1077,7 @@ mod tests {
         let h1_max_headers = 10;
         let mut scratch = vec![];
         scratch.extend(b"10\r\n1234567890abcdef\r\n0\r\n");
-        for i in 0..h1_max_headers {
+        for i in 0..=h1_max_headers {
             scratch.extend(format!("trailer{i}: {i}\r\n").as_bytes());
         }
         scratch.extend(b"\r\n");

@@ -3,13 +3,13 @@ use std::{
     fmt::{self, Debug},
     io::{self, IoSlice},
     pin::Pin,
-    task::{Context, Poll, ready},
+    task::{ready, Context, Poll},
 };
 
 use bytes::{Buf, Bytes, BytesMut};
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use super::{Http1Transaction, ParseContext, ParsedMessage, buf::BufList};
+use super::{buf::BufList, Http1Transaction, ParseContext, ParsedMessage};
 use crate::{Error, Result};
 
 /// The initial buffer size allocated before trying to read from IO.
@@ -63,15 +63,14 @@ where
         } else {
             WriteStrategy::Flatten
         };
-        let write_buf = WriteBuf::new(strategy);
         Buffered {
             flush_pipeline: false,
             io,
             partial_len: None,
             read_blocked: false,
-            read_buf: BytesMut::with_capacity(0),
+            read_buf: BytesMut::new(),
             read_buf_strategy: ReadStrategy::default(),
-            write_buf,
+            write_buf: WriteBuf::new(strategy),
         }
     }
 
@@ -143,6 +142,11 @@ where
         self.write_buf.buffer(buf)
     }
 
+    /// Whether there are bytes waiting in the write buffer to be flushed.
+    pub(crate) fn has_buffered_write(&self) -> bool {
+        self.write_buf.remaining() > 0
+    }
+
     #[inline]
     pub(crate) fn can_buffer(&self) -> bool {
         self.flush_pipeline || self.write_buf.can_buffer()
@@ -179,6 +183,7 @@ where
                     h1_parser_config: parse_ctx.h1_parser_config,
                     h1_max_headers: parse_ctx.h1_max_headers,
                     h09_responses: parse_ctx.h09_responses,
+                    on_informational: parse_ctx.on_informational,
                 },
             )? {
                 Some(msg) => {
@@ -211,7 +216,14 @@ where
 
     pub(crate) fn poll_read_from_io(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<usize>> {
         self.read_blocked = false;
-        let next = self.read_buf_strategy.next();
+        // Get the next amount to allocate, but make sure we don't go over
+        // the max read buf size configured.
+        let next = cmp::min(
+            self.read_buf_strategy.next(),
+            self.read_buf_strategy
+                .max()
+                .saturating_sub(self.read_buf.len()),
+        );
         if self.read_buf_remaining_mut() < next {
             self.read_buf.reserve(next);
         }
@@ -233,11 +245,6 @@ where
     #[inline]
     pub(crate) fn into_inner(self) -> (T, Bytes) {
         (self.io, self.read_buf.freeze())
-    }
-
-    #[inline]
-    pub(crate) fn io_mut(&mut self) -> &mut T {
-        &mut self.io
     }
 
     #[inline]
@@ -278,6 +285,11 @@ where
             }
             Pin::new(&mut self.io).poll_flush(cx)
         }
+    }
+
+    pub(crate) fn poll_shutdown(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        ready!(self.poll_flush(cx))?;
+        Pin::new(&mut self.io).poll_shutdown(cx)
     }
 
     /// Specialized version of `flush` when strategy is Flatten.
@@ -656,12 +668,11 @@ mod tests {
                 h1_parser_config: &Default::default(),
                 h1_max_headers: None,
                 h09_responses: false,
+                on_informational: &mut None,
             };
-            assert!(
-                buffered
-                    .parse::<http1::role::Client>(cx, parse_ctx)
-                    .is_pending()
-            );
+            assert!(buffered
+                .parse::<http1::role::Client>(cx, parse_ctx)
+                .is_pending());
             Poll::Ready(())
         })
         .await;

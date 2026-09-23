@@ -3,7 +3,7 @@
 use std::{
     future::Future,
     pin::Pin,
-    task::{Context, Poll, ready},
+    task::{ready, Context, Poll},
 };
 
 use bytes::Bytes;
@@ -13,14 +13,14 @@ use httparse::ParserConfig;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::{
-    Error, Result,
     body::Incoming,
     dispatch::{self, TrySendError},
     error::BoxError,
     proto::{
         self,
-        http1::{self, Http1Options, conn::Conn, role::Client},
+        http1::{self, conn::Conn, role::Client, Http1Options},
     },
+    Error, Result,
 };
 
 /// The sender side of an established connection.
@@ -52,6 +52,12 @@ pub struct Parts<T> {
 ///
 /// In most cases, this should just be spawned into an executor, so that it
 /// can process incoming and outgoing messages, notice hangups, and the like.
+///
+/// # Drop behavior
+///
+/// Dropping this future drops the underlying I/O, interrupting requests and
+/// response bodies that still need it. For graceful shutdown, finish outstanding
+/// requests and response bodies, drop [`SendRequest`], and poll this future to completion.
 #[must_use = "futures do nothing unless polled"]
 pub struct Connection<T, B>
 where
@@ -101,6 +107,8 @@ impl<B> SendRequest<B> {
 
     /// Waits until the dispatcher is ready
     ///
+    /// # Errors
+    ///
     /// If the associated connection is closed, this returns an Error.
     #[inline]
     pub async fn ready(&mut self) -> Result<()> {
@@ -128,10 +136,19 @@ where
     ///
     /// Returns a future that if successful, yields the `Response`.
     ///
-    /// # Error
+    /// # Errors
     ///
     /// If there was an error before trying to serialize the request to the
     /// connection, the message will be returned as part of this error.
+    ///
+    /// # Cancel safety
+    ///
+    /// Drop the returned future to cancel an in-flight request. HTTP/1 cannot
+    /// cancel an individual request on the wire, so the connection closes when
+    /// its driver observes the cancellation. Keep polling [`Connection`] to
+    /// complete this shutdown. The same [`SendRequest`] cannot be reused;
+    /// subsequent requests return a [canceled error](Error::is_canceled).
+    #[allow(clippy::result_large_err)]
     pub fn try_send_request(
         &mut self,
         req: Request<B>,
@@ -169,6 +186,42 @@ where
     pub fn with_upgrades(self) -> upgrades::UpgradeableConnection<T, B> {
         upgrades::UpgradeableConnection { inner: Some(self) }
     }
+
+    /// Poll the connection for completion, but without calling `shutdown`
+    /// on the underlying IO.
+    ///
+    /// This is useful to allow running a connection while doing an HTTP
+    /// upgrade. Once the upgrade is completed, the connection would be "done",
+    /// but it is not desired to actually shutdown the IO object. Instead you
+    /// would take it back using `into_parts`.
+    ///
+    /// Use [`poll_fn`](https://docs.rs/futures/0.1.25/futures/future/fn.poll_fn.html)
+    /// and [`try_ready!`](https://docs.rs/futures/0.1.25/futures/macro.try_ready.html)
+    /// to work with this function; or use the `without_shutdown` wrapper.
+    pub fn poll_without_shutdown(&mut self, cx: &mut Context<'_>) -> Poll<crate::Result<()>> {
+        self.inner.poll_without_shutdown(cx)
+    }
+
+    /// Prevent shutdown of the underlying IO object at the end of service the request,
+    /// instead run `into_parts`. This is a convenience wrapper over `poll_without_shutdown`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the connection encounters an error while being polled to completion.
+    pub async fn without_shutdown(self) -> crate::Result<Parts<T>> {
+        let mut conn = Some(self);
+        std::future::poll_fn(move |cx| -> Poll<crate::Result<Parts<T>>> {
+            ready!(conn
+                .as_mut()
+                .expect("client connection polled after completion")
+                .poll_without_shutdown(cx))?;
+            Poll::Ready(Ok(conn
+                .take()
+                .expect("client connection missing before completion")
+                .into_parts()))
+        })
+        .await
+    }
 }
 
 impl<T, B> Future for Connection<T, B>
@@ -200,14 +253,19 @@ where
 impl Builder {
     /// Provide a options configuration for the HTTP/1 connection.
     #[inline]
-    pub fn options(&mut self, opts: Http1Options) {
+    pub fn options(mut self, opts: Http1Options) -> Self {
         self.opts = opts;
+        self
     }
 
     /// Constructs a connection with the configured options and IO.
     ///
     /// Note, if [`Connection`] is not `await`-ed, [`SendRequest`] will
     /// do nothing.
+    ///
+    /// # Errors
+    ///
+    /// The current implementation does not return an error.
     pub async fn handshake<T, B>(self, io: T) -> Result<(SendRequest<B>, Connection<T, B>)>
     where
         T: AsyncRead + AsyncWrite + Unpin,

@@ -1,4 +1,5 @@
 #![allow(dead_code)]
+#![allow(unsafe_code)]
 //! Various runtimes for hyper
 use std::{
     future::Future,
@@ -25,7 +26,6 @@ where
 }
 
 /// A Timer that uses the tokio runtime.
-
 #[derive(Clone, Debug)]
 pub struct TokioTimer;
 

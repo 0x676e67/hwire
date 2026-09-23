@@ -5,19 +5,18 @@ use std::{
 
 use bytes::{Bytes, BytesMut};
 use http::{
-    Method, StatusCode, Version,
     header::{self, Entry, HeaderMap, HeaderName, HeaderValue},
+    Method, StatusCode, Version,
 };
-use smallvec::{SmallVec, smallvec, smallvec_inline};
+use smallvec::{smallvec, smallvec_inline, SmallVec};
 
-use super::{Encode, Encoder, Http1Transaction, ParseContext, ParsedMessage, ext::ReasonPhrase};
+use super::{Encode, Encoder, Http1Transaction, ParseContext, ParsedMessage};
 use crate::{
-    Error, Result,
     body::DecodedLength,
-    config::RequestConfig,
     error::Parse,
-    header::OrigHeaderMap,
-    proto::{BodyLength, MessageHead, RequestHead, RequestLine, headers},
+    ext::{OnPreserveHeader, ReasonPhrase},
+    proto::{headers, BodyLength, MessageHead, RequestHead, RequestLine},
+    Error, Result,
 };
 
 /// totally scientific
@@ -38,6 +37,13 @@ macro_rules! header_name {
 macro_rules! header_value {
     ($bytes:expr) => {{
         {
+            // SAFETY:
+            // 1. The input `$bytes` must be a valid header value as per RFC 7230.
+            //    See https://www.rfc-editor.org/rfc/rfc7230#section-3.2.6.
+            // 2. It must not contain CR, LF, DEL, or control bytes other than HTAB;
+            //    SP, visible ASCII, and obs-text bytes are allowed.
+            // 3. The caller uses values validated by httparse and unfolds any
+            //    accepted obsolete line folding before calling this macro.
             #[allow(unsafe_code)]
             unsafe {
                 HeaderValue::from_maybe_shared_unchecked($bytes)
@@ -94,7 +100,10 @@ fn is_complete_fast(bytes: &[u8], prev_len: usize) -> bool {
             if bytes[i + 1..].chunks(3).next() == Some(&b"\n\r\n"[..]) {
                 return true;
             }
-        } else if b == b'\n' && bytes.get(i + 1) == Some(&b'\n') {
+        } else if b == b'\n'
+            && (bytes.get(i + 1) == Some(&b'\n')
+                || bytes[i + 1..].chunks(2).next() == Some(&b"\r\n"[..]))
+        {
             return true;
         }
     }
@@ -157,7 +166,7 @@ impl Http1Transaction for Client {
                             }
                         };
 
-                        let version = if res.version.unwrap() == 1 {
+                        let version = if res.version.expect("httparse completed") == 1 {
                             Version::HTTP_11
                         } else {
                             Version::HTTP_10
@@ -233,6 +242,7 @@ impl Http1Transaction for Client {
                 headers,
                 extensions,
             };
+
             if let Some((decode, is_upgrade)) = Client::decoder(&head, ctx.req_method)? {
                 return Ok(Some(ParsedMessage {
                     head,
@@ -243,6 +253,12 @@ impl Http1Transaction for Client {
                     keep_alive: keep_alive && !is_upgrade,
                     wants_upgrade: is_upgrade,
                 }));
+            }
+
+            if head.subject.is_informational() {
+                if let Some(callback) = ctx.on_informational {
+                    callback.call(head.into_response(()));
+                }
             }
 
             // Parsing a 1xx response could have consumed the buffer, check if
@@ -256,7 +272,8 @@ impl Http1Transaction for Client {
     fn encode(msg: Encode<'_, Self::Outgoing>, dst: &mut Vec<u8>) -> Result<Encoder> {
         trace!(
             "Client::encode method={:?}, body={:?}",
-            msg.head.subject.0, msg.body
+            msg.head.subject.0,
+            msg.body
         );
 
         *msg.req_method = Some(msg.head.subject.0.clone());
@@ -282,8 +299,19 @@ impl Http1Transaction for Client {
         }
         extend(dst, b"\r\n");
 
-        if let Some(orig_headers) = RequestConfig::<OrigHeaderMap>::get(&msg.head.extensions) {
-            write_headers_original_case(&mut msg.head.headers, orig_headers, dst);
+        if let Some(header_sort) = &msg.head.extensions.get::<OnPreserveHeader>() {
+            header_sort.call_visit(&mut msg.head.headers, &mut |name, value| {
+                extend(dst, name.as_ref());
+
+                // Wanted for curl test cases that send `X-Custom-Header:\r\n`
+                if value.is_empty() {
+                    extend(dst, b":\r\n");
+                } else {
+                    extend(dst, b": ");
+                    extend(dst, value.as_bytes());
+                    extend(dst, b"\r\n");
+                }
+            });
         } else {
             write_headers(&msg.head.headers, dst);
         }
@@ -638,25 +666,6 @@ pub(crate) fn write_headers(headers: &HeaderMap, dst: &mut Vec<u8>) {
     }
 }
 
-fn write_headers_original_case(
-    headers: &mut HeaderMap,
-    orig_headers: &OrigHeaderMap,
-    dst: &mut Vec<u8>,
-) {
-    orig_headers.sort_headers_for_each(headers, |orig_name, value| {
-        extend(dst, orig_name);
-
-        // Wanted for curl test cases that send `X-Custom-Header:\r\n`
-        if value.is_empty() {
-            extend(dst, b":\r\n");
-        } else {
-            extend(dst, b": ");
-            extend(dst, value.as_bytes());
-            extend(dst, b"\r\n");
-        }
-    });
-}
-
 struct FastWrite<'a>(&'a mut Vec<u8>);
 
 impl fmt::Write for FastWrite<'_> {
@@ -675,4 +684,22 @@ impl fmt::Write for FastWrite<'_> {
 #[inline]
 fn extend(dst: &mut Vec<u8>, data: &[u8]) {
     dst.extend_from_slice(data);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_complete_fast;
+
+    #[test]
+    fn test_is_complete_fast_lf_crlf() {
+        let s = b"GET / HTTP/1.1\r\na: b\n\r\n";
+        for n in 0..s.len() {
+            assert!(is_complete_fast(s, n), "{:?}; {}", s, n);
+        }
+
+        let s = b"GET / HTTP/1.1\r\na: b\n\r";
+        for n in 0..s.len() {
+            assert!(!is_complete_fast(s, n));
+        }
+    }
 }

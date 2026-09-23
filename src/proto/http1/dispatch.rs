@@ -3,7 +3,7 @@ use std::{
     future::Future,
     marker::Unpin,
     pin::Pin,
-    task::{Context, Poll, ready},
+    task::{ready, Context, Poll},
 };
 
 use bytes::{Buf, Bytes};
@@ -13,12 +13,12 @@ use tokio::io::{AsyncRead, AsyncWrite};
 
 use super::{BodyLength, Conn, Http1Transaction, MessageHead, Wants};
 use crate::{
-    Error, Result,
     body::{self, DecodedLength, Incoming},
     dispatch::{self, TrySendError},
     error::BoxError,
     proto::{self, Dispatched, RequestHead},
     upgrade::OnUpgrade,
+    Error, Result,
 };
 
 pub(crate) struct Dispatcher<D, Bs: Body, I, T> {
@@ -31,8 +31,11 @@ pub(crate) struct Dispatcher<D, Bs: Body, I, T> {
 
 pub(crate) trait Dispatch {
     type PollItem;
+
     type PollBody;
+
     type PollError;
+
     type RecvItem;
 
     #[allow(clippy::type_complexity)]
@@ -87,6 +90,22 @@ where
     pub(crate) fn into_inner(self) -> (I, Bytes, D) {
         let (io, buf) = self.conn.into_inner();
         (io, buf, self.dispatch)
+    }
+
+    /// Run this dispatcher until HTTP says this connection is done,
+    /// but don't call `Write::shutdown` on the underlying IO.
+    ///
+    /// This is useful for old-style HTTP upgrades, but ignores
+    /// newer-style upgrade API.
+    pub(crate) fn poll_without_shutdown(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<crate::Result<()>> {
+        Pin::new(self).poll_catch(cx, false).map_ok(|ds| {
+            if let Dispatched::Upgrade(pending) = ds {
+                pending.manual();
+            }
+        })
     }
 
     fn poll_catch(
@@ -164,18 +183,24 @@ where
                 return Poll::Ready(Ok(()));
             }
 
-            // If we are continuing only because "wants_write_again", check if write is ready.
+            // If we are continuing only because "wants_write_again", re-check whether a second
+            // write poll can make progress. `poll_flush` can be ready even when there is no
+            // buffered data and the request body is still pending, so relying on the previous
+            // readiness can hot-loop.
             if !wants_read_again && wants_write_again {
-                // If write was ready, just proceed with the loop
-                if write_ready {
-                    continue;
-                }
                 // Write was previously pending, but may have become ready since polling flush, so
-                // we need to check it again. If we simply proceeded, the case of an unbuffered
-                // writer where flush is always ready would cause us to hot loop.
+                // we need to check it again. If it is still pending, it is safe to yield and rely
+                // on wake-up from the connection futures.
                 if self.poll_write(cx)?.is_pending() {
-                    // write is pending, so it is safe to yield and rely on wake-up from connection
-                    // futures.
+                    // That write can have buffered bytes before going pending: a body that
+                    // reached end-of-stream between the two write polls buffers the end of the
+                    // message here, and then the write goes pending on the *next* message.
+                    // Yielding without flushing would strand those bytes in the write buffer
+                    // until the peer gives up, since the wake-ups we then rely on are for
+                    // reads. Flush what was just buffered before yielding.
+                    if self.conn.has_buffered_write() {
+                        let _ = self.poll_flush(cx)?;
+                    }
                     return Poll::Ready(Ok(()));
                 }
             }
@@ -430,9 +455,10 @@ where
         self.conn.close_write();
     }
 
-    #[inline]
+    /// If there is pending data in `body_rx`, and the connection is still in a body-writing state,
+    /// we can make progress writing if the connection is ready.
     fn can_write_again(&mut self) -> bool {
-        self.body_rx.is_some()
+        !self.is_closing && self.body_rx.is_some() && self.conn.can_write_body()
     }
 
     fn is_done(&self) -> bool {
@@ -550,8 +576,11 @@ where
     B: Body,
 {
     type PollItem = RequestHead;
+
     type PollBody = B;
+
     type PollError = Infallible;
+
     type RecvItem = proto::ResponseHead;
 
     fn poll_msg(
@@ -710,9 +739,6 @@ mod tests {
 
         let body = {
             let (mut tx, body) = Incoming::h1(DecodedLength::new(4), false);
-            std::future::poll_fn(|cx| tx.poll_ready(cx))
-                .await
-                .expect("ready");
             tx.send_data("reee".into()).unwrap();
             body
         };
@@ -743,9 +769,6 @@ mod tests {
 
         let body = {
             let (mut tx, body) = Incoming::channel();
-            std::future::poll_fn(|cx| tx.poll_ready(cx))
-                .await
-                .expect("ready");
             tx.send_data("".into()).unwrap();
             body
         };

@@ -2,28 +2,28 @@ use std::{
     fmt, io,
     marker::{PhantomData, Unpin},
     pin::Pin,
-    task::{Context, Poll, ready},
+    task::{ready, Context, Poll},
 };
 
 use bytes::{Buf, Bytes};
 use http::{
+    header::{Entry, HeaderValue, CONNECTION, TE},
     HeaderMap, Method, Version,
-    header::{CONNECTION, HeaderValue, TE},
 };
 use http_body::Frame;
 use httparse::ParserConfig;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use super::{
-    Decoder, Encode, Http1Transaction, ParseContext, Wants,
     encode::{EncodedBuf, Encoder},
     io::Buffered,
+    Decoder, Encode, Http1Transaction, ParseContext, Wants,
 };
 use crate::{
-    Error, Result,
     body::DecodedLength,
-    proto::{BodyLength, MessageHead, headers},
-    upgrade,
+    ext::OnInformational,
+    proto::{headers, BodyLength, MessageHead},
+    upgrade, Error, Result,
 };
 
 /// This handles a connection, which will have been established over an
@@ -57,6 +57,7 @@ where
                 h1_parser_config: ParserConfig::default(),
                 h1_max_headers: None,
                 h09_responses: false,
+                on_informational: None,
                 notify_read: false,
                 reading: Reading::Init,
                 writing: Writing::Init,
@@ -170,6 +171,7 @@ where
                 h1_parser_config: &self.state.h1_parser_config,
                 h1_max_headers: self.state.h1_max_headers,
                 h09_responses: self.state.h09_responses,
+                on_informational: &mut self.state.on_informational,
             },
         ) {
             Poll::Ready(Ok(msg)) => msg,
@@ -186,6 +188,9 @@ where
 
         // Prevent accepting HTTP/0.9 responses after the initial one, if any.
         self.state.h09_responses = false;
+
+        // Drop any OnInformational callbacks, we're done there!
+        self.state.on_informational = None;
 
         self.state.busy();
         self.state.keep_alive &= msg.keep_alive;
@@ -495,6 +500,11 @@ where
         self.io.can_buffer()
     }
 
+    /// Whether bytes are sitting in the write buffer waiting to be flushed.
+    pub(crate) fn has_buffered_write(&self) -> bool {
+        self.io.has_buffered_write()
+    }
+
     pub(super) fn write_head(&mut self, head: MessageHead<T::Outgoing>, body: Option<BodyLength>) {
         if let Some(encoder) = self.encode_head(head, body) {
             self.state.writing = if !encoder.is_eof() {
@@ -516,6 +526,16 @@ where
 
         self.state.busy();
 
+        // A client request carrying `Connection: close` must not be pooled or
+        // reused. hwire otherwise derives connection reuse from the response
+        // alone, so a backend that ignores the request-side close (omits
+        // `Connection: close` in its response) would leave the connection in
+        // the pool. Disable keep-alive up front so the connection is evicted
+        // regardless of the response.
+        if headers::connection_any_close(&head.headers) {
+            self.state.disable_keep_alive();
+        }
+
         self.enforce_version(&mut head);
         let buf = self.io.headers_buf();
 
@@ -533,6 +553,7 @@ where
                 debug_assert!(self.state.cached_headers.is_none());
                 debug_assert!(head.headers.is_empty());
                 self.state.cached_headers = Some(head.headers);
+                self.state.on_informational = head.extensions.remove::<OnInformational>();
 
                 Some(encoder)
             }
@@ -546,10 +567,11 @@ where
 
     // Fix keep-alive when Connection: keep-alive header is not present
     fn fix_keep_alive(&mut self, head: &mut MessageHead<T::Outgoing>) {
-        let outgoing_is_keep_alive = head
-            .headers
-            .get(CONNECTION)
-            .is_some_and(headers::connection_keep_alive);
+        let connection_entry = head.headers.entry(CONNECTION);
+        let outgoing_is_keep_alive = match &connection_entry {
+            Entry::Occupied(entry) => entry.iter().any(headers::connection_keep_alive),
+            Entry::Vacant(_) => false,
+        };
 
         if !outgoing_is_keep_alive {
             match head.version {
@@ -558,10 +580,14 @@ where
                 Version::HTTP_10 => self.state.disable_keep_alive(),
                 // If response is version 1.1 and keep-alive is wanted, add
                 // Connection: keep-alive header when not present
-                Version::HTTP_11 if self.state.wants_keep_alive() => {
-                    head.headers
-                        .insert(CONNECTION, HeaderValue::from_static("keep-alive"));
-                }
+                Version::HTTP_11 if self.state.wants_keep_alive() => match connection_entry {
+                    Entry::Occupied(mut entry) => {
+                        entry.append(HeaderValue::from_static("keep-alive"));
+                    }
+                    Entry::Vacant(entry) => {
+                        entry.insert(HeaderValue::from_static("keep-alive"));
+                    }
+                },
                 _ => (),
             }
         }
@@ -580,8 +606,16 @@ where
             }
             Version::HTTP_11 => {
                 if let KA::Disabled = self.state.keep_alive.status() {
-                    head.headers
-                        .insert(CONNECTION, HeaderValue::from_static("close"));
+                    match head.headers.entry(CONNECTION) {
+                        Entry::Occupied(mut entry) => {
+                            if !entry.iter().any(headers::connection_close) {
+                                entry.append(HeaderValue::from_static("close"));
+                            }
+                        }
+                        Entry::Vacant(entry) => {
+                            entry.insert(HeaderValue::from_static("close"));
+                        }
+                    }
                 }
             }
             _ => (),
@@ -717,7 +751,7 @@ where
     }
 
     pub(super) fn poll_shutdown(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        match ready!(Pin::new(self.io.io_mut()).poll_shutdown(cx)) {
+        match ready!(self.io.poll_shutdown(cx)) {
             Ok(()) => {
                 trace!("shut down IO complete");
                 Poll::Ready(Ok(()))
@@ -802,6 +836,10 @@ struct State {
     h1_parser_config: ParserConfig,
     h1_max_headers: Option<usize>,
     h09_responses: bool,
+    /// If set, called with each 1xx informational response received for
+    /// the current request. MUST be unset after a non-1xx response is
+    /// received.
+    on_informational: Option<OnInformational>,
     /// Set to true when the Dispatcher should poll read operations
     /// again. See the `maybe_notify` method for more.
     notify_read: bool,

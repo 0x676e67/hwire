@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 //! Tokio IO integration for core.
 use std::{
     future::Future,
@@ -6,9 +8,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use hwire::rt::{Executor, Sleep, Timer};
 use pin_project_lite::pin_project;
-
-use super::{Executor, Sleep, Timer};
 
 /// Future executor that utilises `tokio` threads.
 #[non_exhaustive]

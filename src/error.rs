@@ -24,7 +24,7 @@ type Cause = BoxError;
 ///
 /// # Source
 ///
-/// A `crate::core::Error` may be caused by another error. To aid in debugging,
+/// A `hwire::Error` may be caused by another error. To aid in debugging,
 /// those are exposed in `Error::source()` as erased types. While it is
 /// possible to check the exact type of the sources, they **can not be depended
 /// on**. They may come from private internal dependencies, and are subject to
@@ -39,6 +39,7 @@ struct ErrorImpl {
 }
 
 #[derive(Debug)]
+#[cfg_attr(feature = "http3", derive(Clone, Copy))]
 pub(super) enum Kind {
     Parse(Parse),
     User(User),
@@ -60,9 +61,12 @@ pub(super) enum Kind {
     Shutdown,
     /// A general error from h2.
     Http2,
+    #[cfg(feature = "http3")]
+    Http3,
 }
 
 #[derive(Debug)]
+#[cfg_attr(feature = "http3", derive(Clone, Copy))]
 pub(crate) enum Parse {
     Method,
     Version,
@@ -75,6 +79,7 @@ pub(crate) enum Parse {
 }
 
 #[derive(Debug)]
+#[cfg_attr(feature = "http3", derive(Clone, Copy))]
 pub(crate) enum Header {
     Token,
     ContentLengthInvalid,
@@ -82,7 +87,10 @@ pub(crate) enum Header {
 }
 
 #[derive(Debug)]
+#[cfg_attr(feature = "http3", derive(Clone, Copy))]
 pub(super) enum User {
+    #[cfg(feature = "http3")]
+    InvalidRequest,
     /// Error calling user's Body::poll_data().
     Body,
     /// The user aborted writing of the outgoing body.
@@ -105,6 +113,11 @@ pub(super) struct TimedOut;
 
 impl Error {
     /// Returns true if this was an HTTP parse error.
+    ///
+    /// This can be caused by a malformed HTTP message, an invalid header,
+    /// an invalid URI, an invalid HTTP version, or a message head that is
+    /// too large. Use the more specific `is_parse_*` methods to determine
+    /// the exact cause.
     #[inline]
     pub fn is_parse(&self) -> bool {
         matches!(self.inner.kind, Kind::Parse(_))
@@ -118,39 +131,115 @@ impl Error {
     }
 
     /// Returns true if this error was caused by user code.
+    ///
+    /// For example, this can be returned when the user's `Body` stream
+    /// yields an error.
     #[inline]
     pub fn is_user(&self) -> bool {
         matches!(self.inner.kind, Kind::User(_))
     }
 
     /// Returns true if this was about a `Request` that was canceled.
+    ///
+    /// This typically happens when a pending request is dropped before
+    /// it can be dispatched to the connection, for example because the
+    /// connection was not ready.
     #[inline]
     pub fn is_canceled(&self) -> bool {
         matches!(self.inner.kind, Kind::Canceled)
     }
 
     /// Returns true if a sender's channel is closed.
+    ///
+    /// This can occur when the other side of a client or body channel
+    /// has been dropped, indicating that the receiver is no longer
+    /// interested in the data.
     #[inline]
     pub fn is_closed(&self) -> bool {
         matches!(self.inner.kind, Kind::ChannelClosed)
     }
 
-    /// Returns true if the connection closed before a message could complete.
+    /// Returns true if an HTTP/1 connection closed before a message could complete.
+    ///
+    /// This can happen when the I/O reports EOF while a response is still expected,
+    /// for example if a server closes an idle connection just after a request is sent.
+    /// Errors from decoding a truncated body may use a different classification.
+    ///
+    /// See [RFC 9112 §8](https://www.rfc-editor.org/rfc/rfc9112.html#section-8)
+    /// for HTTP/1.1 message completeness rules.
     #[inline]
     pub fn is_incomplete_message(&self) -> bool {
         matches!(self.inner.kind, Kind::IncompleteMessage)
     }
 
     /// Returns true if the body write was aborted.
+    ///
+    /// This can occur when an outgoing HTTP/1 body ends before its declared
+    /// content length has been written.
     #[inline]
     pub fn is_body_write_aborted(&self) -> bool {
         matches!(self.inner.kind, Kind::User(User::BodyWriteAborted))
     }
 
+    /// Returns true if shutting down the HTTP/1 connection's I/O failed.
+    ///
+    /// This can happen when the connection is being gracefully shut down
+    /// and the underlying IO reports an error during the shutdown sequence.
+    #[inline]
+    pub fn is_shutdown(&self) -> bool {
+        matches!(self.inner.kind, Kind::Shutdown)
+    }
+
     /// Returns true if the error was caused by a timeout.
+    ///
+    /// For HTTP/2 clients, this includes the keep-alive timeout (see
+    /// [`keep_alive_timeout`](crate::http2::Http2OptionsBuilder::keep_alive_timeout)).
+    /// For HTTP/3, this also includes QUIC connection timeouts.
     #[inline]
     pub fn is_timeout(&self) -> bool {
+        #[cfg(feature = "http3")]
+        if self
+            .find_source::<http3::error::ConnectionError>()
+            .or_else(|| match self.find_source::<http3::error::StreamError>() {
+                Some(http3::error::StreamError::ConnectionError(error)) => Some(error),
+                _ => None,
+            })
+            .is_some_and(|error| {
+                matches!(
+                    error,
+                    http3::error::ConnectionError::Timeout
+                        | http3::error::ConnectionError::Remote(
+                            http3::quic::ConnectionErrorIncoming::Timeout
+                        )
+                )
+            })
+            || matches!(
+                self.find_source::<http3::quic::ConnectionErrorIncoming>(),
+                Some(http3::quic::ConnectionErrorIncoming::Timeout)
+            )
+        {
+            return true;
+        }
         self.find_source::<TimedOut>().is_some()
+    }
+
+    /// Returns true if the HTTP/3 peer rejected the request through GOAWAY or
+    /// `H3_REQUEST_REJECTED`. Retrying still requires recreating any consumed body.
+    #[cfg(feature = "http3")]
+    pub fn is_h3_request_rejected(&self) -> bool {
+        matches!(self.inner.kind, Kind::Http3)
+            && self
+                .find_source::<http3::error::StreamError>()
+                .is_some_and(|error| {
+                    matches!(
+                        error,
+                        http3::error::StreamError::GoawayRejected { .. }
+                            | http3::error::StreamError::RemoteTerminate {
+                                code: http3::error::Code::H3_REQUEST_REJECTED,
+                                ..
+                            }
+                    )
+                })
     }
 
     #[inline]
@@ -285,6 +374,21 @@ impl Error {
         }
     }
 
+    #[cfg(feature = "http3")]
+    pub(super) fn from_shared(cause: std::sync::Arc<Error>) -> Error {
+        Error::new(cause.inner.kind).with(cause)
+    }
+
+    #[cfg(feature = "http3")]
+    pub(super) fn new_user_invalid_request<E: Into<Cause>>(cause: E) -> Error {
+        Error::new_user(User::InvalidRequest).with(cause)
+    }
+
+    #[cfg(feature = "http3")]
+    pub(super) fn new_h3<E: Into<Cause>>(cause: E) -> Error {
+        Error::new(Kind::Http3).with(cause)
+    }
+
     fn description(&self) -> &str {
         match self.inner.kind {
             Kind::Parse(Parse::Method) => "invalid HTTP method parsed",
@@ -301,7 +405,7 @@ impl Error {
             Kind::Parse(Parse::TooLarge) => "message head is too large",
             Kind::Parse(Parse::Status) => "invalid HTTP status-code parsed",
             Kind::Parse(Parse::Internal) => {
-                "internal error inside wreq and/or its dependencies, please report"
+                "internal error inside hwire and/or its dependencies, please report"
             }
 
             Kind::IncompleteMessage => "connection closed before message completed",
@@ -312,7 +416,11 @@ impl Error {
             Kind::BodyWrite => "error writing a body to connection",
             Kind::Shutdown => "error shutting down connection",
             Kind::Http2 => "http2 error",
+            #[cfg(feature = "http3")]
+            Kind::Http3 => "http3 error",
             Kind::Io => "connection error",
+            #[cfg(feature = "http3")]
+            Kind::User(User::InvalidRequest) => "invalid HTTP/3 request",
 
             Kind::User(User::Body) => "error from user's Body stream",
             Kind::User(User::BodyWriteAborted) => "user body write aborted",
@@ -329,7 +437,7 @@ impl Error {
 
 impl fmt::Debug for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut f = f.debug_tuple("crate::core::Error");
+        let mut f = f.debug_tuple("hwire::Error");
         f.field(&self.inner.kind);
         if let Some(ref cause) = self.inner.cause {
             f.field(cause);
@@ -427,6 +535,24 @@ mod tests {
     use super::*;
 
     fn assert_send_sync<T: Send + Sync + 'static>() {}
+
+    #[cfg(feature = "http3")]
+    #[test]
+    fn http3_timeout_survives_shared_error_propagation() {
+        let error = Error::new_h3(http3::quic::ConnectionErrorIncoming::Timeout);
+        assert!(error.is_timeout());
+        assert!(Error::from_shared(std::sync::Arc::new(error)).is_timeout());
+        // The upstream StreamError does not expose its nested error as source().
+        let error = Error::new_h3(http3::error::StreamError::ConnectionError(
+            http3::error::ConnectionError::Timeout,
+        ));
+        assert!(error.is_timeout());
+        assert!(Error::from_shared(std::sync::Arc::new(error)).is_timeout());
+        let reset = Error::new_h3(http3::quic::ConnectionErrorIncoming::ApplicationClose {
+            error_code: 0x10c,
+        });
+        assert!(!reset.is_timeout());
+    }
 
     #[test]
     fn error_satisfies_send_sync() {

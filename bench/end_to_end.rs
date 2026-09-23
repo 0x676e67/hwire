@@ -11,7 +11,9 @@ use std::{convert::Infallible, net::SocketAddr};
 use futures_util::future::join_all;
 use http::{Method, Request, Response};
 use http_body_util::BodyExt;
-use wreq_proto::{http2::Http2Options, rt::TokioExecutor};
+use hwire::http2::Http2Options;
+
+use crate::support::{rt, tokiort};
 
 type BoxedBody = http_body_util::combinators::BoxBody<bytes::Bytes, Infallible>;
 
@@ -94,7 +96,7 @@ fn http1_parallel_x10_res_10mb(b: &mut test::Bencher) {
 
 // HTTP2
 
-const HTTP2_MAX_WINDOW: u32 = std::u32::MAX >> 1;
+const HTTP2_MAX_WINDOW: u32 = u32::MAX >> 1;
 
 #[bench]
 fn http2_consecutive_x1_empty(b: &mut test::Bencher) {
@@ -304,30 +306,32 @@ impl Opts {
         let addr = spawn_server(&rt, &self);
 
         enum Client {
-            Http1(wreq_proto::conn::http1::SendRequest<BoxedBody>),
-            Http2(wreq_proto::conn::http2::SendRequest<BoxedBody>),
+            Http1(hwire::conn::http1::SendRequest<BoxedBody>),
+            Http2(hwire::conn::http2::SendRequest<BoxedBody>),
         }
 
         let mut client = rt.block_on(async {
             if self.http2 {
                 let tcp = tokio::net::TcpStream::connect(&addr).await.unwrap();
 
-                let mut builder = wreq_proto::conn::http2::Builder::new(TokioExecutor::new());
-                builder.options(
-                    Http2Options::builder()
-                        .initial_window_size(self.http2_stream_window)
-                        .initial_connection_window_size(self.http2_conn_window)
-                        .adaptive_window(self.http2_adaptive_window)
-                        .build(),
-                );
-                let (tx, conn) = builder.handshake(tcp).await.unwrap();
+                let (tx, conn) = hwire::conn::http2::Builder::new(rt::TokioExecutor::new())
+                    .options(
+                        Http2Options::builder()
+                            .initial_window_size(self.http2_stream_window)
+                            .initial_connection_window_size(self.http2_conn_window)
+                            .adaptive_window(self.http2_adaptive_window)
+                            .build(),
+                    )
+                    .handshake(tcp)
+                    .await
+                    .unwrap();
                 tokio::spawn(conn);
                 Client::Http2(tx)
             } else if self.parallel_cnt > 1 {
                 todo!("http/1 parallel >1");
             } else {
                 let tcp = tokio::net::TcpStream::connect(&addr).await.unwrap();
-                let (tx, conn) = wreq_proto::conn::http1::Builder::default()
+                let (tx, conn) = hwire::conn::http1::Builder::default()
                     .handshake(tcp)
                     .await
                     .unwrap();
@@ -377,7 +381,7 @@ impl Opts {
                 }
             };
             async {
-                let res: Response<wreq_proto::body::Incoming> = fut.await.expect("client wait");
+                let res: Response<hwire::body::Incoming> = fut.await.expect("client wait");
                 let mut body = res.into_body();
                 while let Some(_chunk) = body.frame().await {}
             }
@@ -415,10 +419,10 @@ fn spawn_server(rt: &tokio::runtime::Runtime, opts: &Opts) -> SocketAddr {
     rt.spawn(async move {
         let _ = &opts;
         while let Ok((sock, _)) = listener.accept().await {
-            let io = support::TokioIo::new(sock);
+            let io = tokiort::TokioIo::new(sock);
             if opts.http2 {
                 tokio::spawn(
-                    hyper::server::conn::http2::Builder::new(support::TokioExecutor)
+                    hyper::server::conn::http2::Builder::new(tokiort::TokioExecutor)
                         .initial_stream_window_size(opts.http2_stream_window)
                         .initial_connection_window_size(opts.http2_conn_window)
                         .adaptive_window(opts.http2_adaptive_window)

@@ -1,0 +1,185 @@
+name: CI
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+
+env:
+  RUST_BACKTRACE: 1
+
+permissions:
+  contents: read
+
+jobs:
+  style:
+    name: Style
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+          components: rustfmt, clippy
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt
+      - name: Style check
+        run: cargo +nightly fmt --all -- --check
+      - name: Clippy check
+        run: cargo +stable clippy --all-features --tests --bins --lib -- -D warnings
+
+  test:
+    name: Test ${{ matrix.rust }} on ${{ matrix.os }}
+    needs: [style]
+    strategy:
+      matrix:
+        rust:
+          - stable
+          - beta
+          - nightly
+
+        os:
+          - ubuntu-latest
+          - windows-latest
+          - macOS-latest
+
+        include:
+          - rust: stable
+            features: "--features full"
+          - rust: beta
+            features: "--features full"
+          - rust: nightly
+            features: "--features full"
+            benches: true
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install Rust (${{ matrix.rust }})
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Test
+        run: cargo test ${{ matrix.features }}
+
+      - name: Test all benches
+        if: matrix.benches
+        run: cargo test --benches ${{ matrix.features }}
+
+  msrv:
+    name: Check MSRV
+    needs: [style]
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Resolve MSRV aware dependencies
+        run: cargo update
+        env:
+          CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS: fallback
+
+      - name: Get MSRV from package metadata
+        id: msrv
+        run: echo "version=$(yq '.package.rust-version' Cargo.toml)" >> $GITHUB_OUTPUT
+
+      - name: Install Rust (${{ steps.msrv.outputs.version }})
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check
+        run: cargo check --lib
+        env:
+          RUSTFLAGS: "-D warnings"
+
+  miri:
+    name: Test with Miri
+    needs: [style]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Test
+        # Can't enable tcp feature since Miri does not support the tokio runtime
+        run: MIRIFLAGS="-Zmiri-disable-isolation" cargo miri test --lib --features full
+
+  features:
+    name: features
+    needs: [style]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-hack
+        uses: taiki-e/install-action@cargo-hack
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: check default features
+        env:
+          RUSTFLAGS: "-D dead_code -D unused_imports"
+        run: |
+          cargo check -p hwire --no-default-features
+          cargo check --no-default-features --features http3
+          cargo check --no-default-features --features http3-datagram
+
+      - name: check --feature-powerset
+        env:
+          RUSTFLAGS: "-D dead_code -D unused_imports"
+        run: |
+          cargo hack -p hwire --no-dev-deps check --feature-powerset --depth 2 --skip tracing
+
+      - name: check --feature-powerset with tracing feature
+        env:
+          RUSTFLAGS: "-D dead_code -D unused_imports"
+        run: |
+          cargo hack -p hwire --no-dev-deps check --feature-powerset --depth 2 --features tracing
+
+  udeps:
+    needs: [style]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Install cargo-udeps
+        uses: taiki-e/install-action@cargo-udeps
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check unused dependencies on default features
+        run: cargo udeps
+
+      - name: Check unused dependencies on full features
+        run: cargo udeps --features full

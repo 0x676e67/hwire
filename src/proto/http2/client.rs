@@ -3,41 +3,45 @@ use std::{
     future::Future,
     marker::PhantomData,
     pin::Pin,
-    task::{Context, Poll, ready},
+    task::{ready, Context, Poll},
 };
 
 use bytes::Bytes;
-use futures_util::future::{Either, FusedFuture};
+use futures_channel::{
+    mpsc,
+    mpsc::{Receiver, Sender},
+    oneshot,
+};
+use futures_util::{
+    future::{Either, FusedFuture},
+    stream::{FusedStream, Stream},
+};
 use http::{Method, Request, Response, StatusCode};
-use http_body::Body;
 use http2::{
-    SendStream,
     client::{Builder, Connection, ResponseFuture, SendRequest},
+    SendStream,
 };
+use http_body::Body;
 use pin_project_lite::pin_project;
-use tokio::{
-    io::{AsyncRead, AsyncWrite},
-    sync::{
-        mpsc,
-        mpsc::{Receiver, Sender},
-        oneshot,
-    },
-};
+use tokio::io::{AsyncRead, AsyncWrite};
 
 use super::{
-    H2Upgraded, PipeToSendStream, SendBuf, ping,
+    ping,
     ping::{Ponger, Recorder},
+    PipeToSendStream, SendBuf,
 };
 use crate::{
-    Error, Result,
     body::{self, Incoming},
-    config::RequestConfig,
     dispatch::{self, Callback, SendWhen, TrySendError},
     error::BoxError,
-    header::OrigHeaderMap,
-    proto::{Dispatched, headers},
-    rt::{Time, bounds::Http2ClientConnExec},
+    ext::OnPreserveHeader,
+    proto::{headers, Dispatched},
+    rt::{
+        bounds::{Http2ClientConnExec, Http2UpgradedExec},
+        Time,
+    },
     upgrade::{self, Upgraded},
+    Error, Result,
 };
 
 /// Receiver for HTTP/2 client requests
@@ -245,7 +249,7 @@ where
             return Poll::Ready(());
         }
 
-        if this.cancel_tx.is_some() && Pin::new(&mut this.drop_rx).poll_recv(cx).is_ready() {
+        if !this.drop_rx.is_terminated() && Pin::new(&mut this.drop_rx).poll_next(cx).is_ready() {
             // mpsc has been dropped, hopefully polling
             // the connection some more should start shutdown
             // and then close.
@@ -259,7 +263,7 @@ where
 
 pin_project! {
     #[project = H2ClientFutureProject]
-    pub enum H2ClientFuture<B, T>
+    pub enum H2ClientFuture<B, T, E>
     where
         B: http_body::Body,
         B: 'static,
@@ -274,7 +278,7 @@ pin_project! {
         },
         Send {
             #[pin]
-            send_when: SendWhen<B>,
+            send_when: SendWhen<B, E>,
         },
         Task {
             #[pin]
@@ -283,11 +287,11 @@ pin_project! {
     }
 }
 
-impl<B, T> Future for H2ClientFuture<B, T>
+impl<B, T, E> Future for H2ClientFuture<B, T, E>
 where
     B: Body + 'static,
-    B::Data: Send,
     B::Error: Into<BoxError>,
+    E: Http2UpgradedExec<B::Data>,
     T: AsyncRead + AsyncWrite + Unpin,
 {
     type Output = ();
@@ -448,6 +452,7 @@ where
                     ping: Some(ping),
                     send_stream: Some(send_stream),
                     cancel_tx: Some(cancel_tx),
+                    exec: self.executor.clone(),
                 },
                 call_back: Some(f.cb),
             },
@@ -455,8 +460,28 @@ where
     }
 }
 
+impl<B, E, T> ClientTask<B, E, T>
+where
+    B: Body + 'static,
+    E: Http2ClientConnExec<B, T> + Unpin,
+    B::Error: Into<BoxError>,
+    T: AsyncRead + AsyncWrite + Unpin,
+{
+    pub(crate) fn is_extended_connect_protocol_enabled(&self) -> bool {
+        self.h2_tx.is_extended_connect_protocol_enabled()
+    }
+
+    pub(crate) fn current_max_send_streams(&self) -> usize {
+        self.h2_tx.current_max_send_streams()
+    }
+
+    pub(crate) fn current_max_recv_streams(&self) -> usize {
+        self.h2_tx.current_max_recv_streams()
+    }
+}
+
 pin_project! {
-    pub(crate) struct ResponseFutMap<B>
+    pub(crate) struct ResponseFutMap<B, E>
     where
         B: Body,
         B: 'static,
@@ -468,10 +493,11 @@ pin_project! {
         #[pin]
         send_stream: Option<Option<SendStream<SendBuf<<B as Body>::Data>>>>,
         cancel_tx: Option<oneshot::Sender<()>>,
+        exec: E,
     }
 }
 
-impl<B: Body + 'static> ResponseFutMap<B> {
+impl<B: Body + 'static, E> ResponseFutMap<B, E> {
     /// Signal the pipe_task to reset the stream (e.g. on client cancellation).
     pub(crate) fn cancel(self: Pin<&mut Self>) {
         if let Some(cancel_tx) = self.project().cancel_tx.take() {
@@ -480,10 +506,10 @@ impl<B: Body + 'static> ResponseFutMap<B> {
     }
 }
 
-impl<B> Future for ResponseFutMap<B>
+impl<B, E> Future for ResponseFutMap<B, E>
 where
     B: Body + 'static,
-    B::Data: Send,
+    E: Http2UpgradedExec<B::Data>,
 {
     type Output = Result<Response<body::Incoming>, (Error, Option<Request<B>>)>;
 
@@ -515,12 +541,8 @@ where
                     let mut res = Response::from_parts(parts, Incoming::empty());
 
                     let (pending, on_upgrade) = upgrade::pending();
-                    let io = H2Upgraded {
-                        ping,
-                        send_stream,
-                        recv_stream,
-                        buf: Bytes::new(),
-                    };
+                    let (io, task) = super::upgrade::pair(send_stream, recv_stream, ping);
+                    this.exec.execute_upgrade(task);
                     let upgraded = Upgraded::new(io, Bytes::new());
 
                     pending.fulfill(upgraded);
@@ -586,18 +608,16 @@ where
                     }
                     let (head, body) = req.into_parts();
                     let mut req = ::http::Request::from_parts(head, ());
-                    super::strip_connection_headers(req.headers_mut(), true);
+                    headers::strip_connection_headers(req.headers_mut(), true);
                     if let Some(len) = body.size_hint().exact() {
                         if len != 0 || headers::method_has_defined_payload_semantics(req.method()) {
                             headers::set_content_length_if_missing(req.headers_mut(), len);
                         }
                     }
 
-                    // Sort headers if we have the original headers
-                    if let Some(orig_headers) =
-                        RequestConfig::<OrigHeaderMap>::remove(req.extensions_mut())
-                    {
-                        orig_headers.sort_headers(req.headers_mut());
+                    // Sort headers
+                    if let Some(header_sort) = req.extensions_mut().remove::<OnPreserveHeader>() {
+                        header_sort.call(req.headers_mut());
                     }
 
                     let is_connect = req.method() == Method::CONNECT;

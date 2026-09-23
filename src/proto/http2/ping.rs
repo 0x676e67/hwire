@@ -20,7 +20,7 @@ use std::{
     fmt,
     future::Future,
     pin::Pin,
-    sync::Arc,
+    sync::{Arc, Mutex},
     task::{self, Poll},
     time::{Duration, Instant},
 };
@@ -28,10 +28,10 @@ use std::{
 use http2::{Ping, PingPong};
 
 use crate::{
-    Result,
     error::{Error, Kind, TimedOut},
+    lock::LockResultExt,
     rt::{Sleep, Time, Timer},
-    sync::Mutex,
+    Result,
 };
 
 type WindowSize = u32;
@@ -219,7 +219,7 @@ impl Recorder {
             return;
         };
 
-        let mut locked = shared.lock();
+        let mut locked = shared.lock().panic_if_poisoned();
         locked.update_last_read_at();
 
         // are we ready to send another bdp ping?
@@ -249,7 +249,7 @@ impl Recorder {
             return;
         };
 
-        let mut locked = shared.lock();
+        let mut locked = shared.lock().panic_if_poisoned();
         locked.update_last_read_at();
     }
 
@@ -265,7 +265,7 @@ impl Recorder {
 
     pub(super) fn ensure_not_timed_out(&self) -> Result<()> {
         if let Some(ref shared) = self.shared {
-            let locked = shared.lock();
+            let locked = shared.lock().panic_if_poisoned();
             if locked.is_keep_alive_timed_out {
                 return Err(KeepAliveTimedOut.crate_error());
             }
@@ -283,7 +283,7 @@ impl Future for Ponger {
     #[inline]
     fn poll(mut self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> Poll<Self::Output> {
         let this = self.as_mut().get_mut();
-        let mut locked = this.shared.lock();
+        let mut locked = this.shared.lock().unwrap();
         // hoping this is fine to move within the lock
         let now = locked.timer.now();
 
