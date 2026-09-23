@@ -712,8 +712,9 @@ dependencies = [
 
 [[package]]
 name = "http3"
-version = "0.1.1"
-source = "git+https://github.com/0x676e67/http3?rev=57a639040f7e0105d55cd13efa90869971d81e1e#57a639040f7e0105d55cd13efa90869971d81e1e"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "daf8014b014f52d76dd0652d424e60569227cdb29f11a29f3e98814521a287bf"
 dependencies = [
  "bytes",
  "fastrand",
@@ -727,8 +728,9 @@ dependencies = [
 
 [[package]]
 name = "http3-datagram"
-version = "0.1.1"
-source = "git+https://github.com/0x676e67/http3?rev=57a639040f7e0105d55cd13efa90869971d81e1e#57a639040f7e0105d55cd13efa90869971d81e1e"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1a2abb6925f94e1daa022400aecabcf6dd9d0b44e57a2bd42151890df6713736"
 dependencies = [
  "bytes",
  "http3",
@@ -736,8 +738,9 @@ dependencies = [
 
 [[package]]
 name = "http3-quic"
-version = "0.1.1"
-source = "git+https://github.com/0x676e67/http3?rev=57a639040f7e0105d55cd13efa90869971d81e1e#57a639040f7e0105d55cd13efa90869971d81e1e"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1fd84b52cab84a955dcc492306bfa204aa1adb6831b80efa20dc02fb3692674e"
 dependencies = [
  "bytes",
  "futures-util",
