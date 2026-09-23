@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790127407770,
+  "lastUpdate": 1790128611167,
   "repoUrl": "https://github.com/0x676e67/hwire",
   "entries": {
     "end_to_end": [
@@ -11231,6 +11231,114 @@ window.BENCHMARK_DATA = {
             "name": "http2_parallel_x10_res_1mb",
             "value": 5344151,
             "range": "± 139881.09",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "49699333+dependabot[bot]@users.noreply.github.com",
+            "name": "dependabot[bot]",
+            "username": "dependabot[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7eb449c6a8fb84a4ebe3bda64b1196743ebb5ce6",
+          "message": "chore(deps): bump smallvec from 1.15.2 to 1.16.1 (#73)\n\nBumps [smallvec](https://github.com/servo/rust-smallvec) from 1.15.2 to 1.16.1.\n- [Release notes](https://github.com/servo/rust-smallvec/releases)\n- [Commits](https://github.com/servo/rust-smallvec/compare/v1.15.2...v1.16.1)\n\n---\nupdated-dependencies:\n- dependency-name: smallvec\n  dependency-version: 1.16.1\n  dependency-type: direct:production\n  update-type: version-update:semver-minor\n...\n\nSigned-off-by: dependabot[bot] <support@github.com>\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>",
+          "timestamp": "2026-09-23T09:53:01+08:00",
+          "tree_id": "51e4dc1c0a6b9a99e35eff20aafafd0a75903ccb",
+          "url": "https://github.com/0x676e67/hwire/commit/7eb449c6a8fb84a4ebe3bda64b1196743ebb5ce6"
+        },
+        "date": 1790128610050,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "http1_consecutive_x1_both_100kb",
+            "value": 90898,
+            "range": "± 1195.63",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http1_consecutive_x1_both_10mb",
+            "value": 6323270,
+            "range": "± 428768.76",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http1_consecutive_x1_empty",
+            "value": 21714,
+            "range": "± 775.91",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http1_consecutive_x1_req_10b",
+            "value": 24316,
+            "range": "± 489.47",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_consecutive_x1_empty",
+            "value": 34610,
+            "range": "± 707.36",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_consecutive_x1_req_100kb",
+            "value": 101644,
+            "range": "± 1693.18",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_consecutive_x1_req_10b",
+            "value": 41000063,
+            "range": "± 21550.67",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_empty",
+            "value": 85003,
+            "range": "± 1036.71",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_req_10kb_100_chunks",
+            "value": 16313171,
+            "range": "± 16368286.99",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_req_10kb_100_chunks_adaptive_window",
+            "value": 8223047,
+            "range": "± 141421.78",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_req_10kb_100_chunks_max_window",
+            "value": 8116062,
+            "range": "± 135116.45",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_req_10mb",
+            "value": 76035967,
+            "range": "± 9066524.91",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_res_10mb",
+            "value": 54509989,
+            "range": "± 923628.53",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_res_1mb",
+            "value": 5395218,
+            "range": "± 101139.74",
             "unit": "ns/iter"
           }
         ]
