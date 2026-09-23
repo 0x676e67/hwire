@@ -35,6 +35,10 @@ fn main() {
 }
 ```
 
+## Low-level
+
+hwire handles HTTP's protocol-level work while leaving runtime and transport choices to the caller. Use it when building a client library or when an application needs direct control over those pieces. For a ready-to-use client, see [wreq].
+
 ## Documentation
 
 - [Protocol API][protocol-api]
@@ -49,5 +53,6 @@ Licensed under either of Apache License, Version 2.0 ([LICENSE][license] or [htt
 Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in the work by you, as defined in the [Apache-2.0][license] license, shall be licensed as above, without any additional terms or conditions.
 
 [Hyper]: https://github.com/hyperium/hyper
+[wreq]: https://github.com/0x676e67/wreq
 [protocol-api]: https://docs.rs/hwire
 [license]: ./LICENSE
