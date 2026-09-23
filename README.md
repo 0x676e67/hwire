@@ -37,7 +37,7 @@ fn main() {
 
 ## Low-level
 
-hwire handles HTTP's protocol-level work while leaving runtime and transport choices to the caller. Use it when building a client library or when an application needs direct control over those pieces. For a ready-to-use client, see [wreq].
+**hwire** handles HTTP protocol details, leaving runtime and transport to its callers; [wreq] provides a ready-to-use client.
 
 ## Documentation
 
