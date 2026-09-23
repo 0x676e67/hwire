@@ -1,6 +1,6 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790100740017,
-  "repoUrl": "https://github.com/0x676e67/wreq-proto",
+  "lastUpdate": 1790125848622,
+  "repoUrl": "https://github.com/0x676e67/hwire",
   "entries": {
     "end_to_end": [
       {
@@ -10799,6 +10799,114 @@ window.BENCHMARK_DATA = {
             "name": "http2_parallel_x10_res_1mb",
             "value": 4576046,
             "range": "± 84331.78",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gngppz@gmail.com",
+            "name": "0x676e67",
+            "username": "0x676e67"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7c0760d467707c49cfd0329d18ebf40a0ffccde5",
+          "message": "chore: update hwire repository links (#83)",
+          "timestamp": "2026-09-23T09:07:15+08:00",
+          "tree_id": "4e2d741808b0dc2f8045ff0b89d27842a640c5a7",
+          "url": "https://github.com/0x676e67/hwire/commit/7c0760d467707c49cfd0329d18ebf40a0ffccde5"
+        },
+        "date": 1790125847573,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "http1_consecutive_x1_both_100kb",
+            "value": 49856,
+            "range": "± 399.84",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http1_consecutive_x1_both_10mb",
+            "value": 3262821,
+            "range": "± 169024.81",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http1_consecutive_x1_empty",
+            "value": 18062,
+            "range": "± 271.55",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http1_consecutive_x1_req_10b",
+            "value": 19025,
+            "range": "± 239.83",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_consecutive_x1_empty",
+            "value": 22877,
+            "range": "± 356.45",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_consecutive_x1_req_100kb",
+            "value": 75857,
+            "range": "± 1256.64",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_consecutive_x1_req_10b",
+            "value": 40999996,
+            "range": "± 28277.91",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_empty",
+            "value": 61874,
+            "range": "± 968.52",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_req_10kb_100_chunks",
+            "value": 15120527,
+            "range": "± 16469390.68",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_req_10kb_100_chunks_adaptive_window",
+            "value": 23397187,
+            "range": "± 16713990.34",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_req_10kb_100_chunks_max_window",
+            "value": 6693311,
+            "range": "± 119500.02",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_req_10mb",
+            "value": 45826890,
+            "range": "± 586319.97",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_res_10mb",
+            "value": 45136917,
+            "range": "± 636383.95",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_res_1mb",
+            "value": 4686003,
+            "range": "± 31531.88",
             "unit": "ns/iter"
           }
         ]
