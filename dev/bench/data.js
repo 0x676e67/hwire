@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790125848622,
+  "lastUpdate": 1790126568597,
   "repoUrl": "https://github.com/0x676e67/hwire",
   "entries": {
     "end_to_end": [
@@ -10907,6 +10907,114 @@ window.BENCHMARK_DATA = {
             "name": "http2_parallel_x10_res_1mb",
             "value": 4686003,
             "range": "卤 31531.88",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gngppz@gmail.com",
+            "name": "0x676e67",
+            "username": "0x676e67"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "eb4f614c8df160bd4a1bd8a27b5372d7c64d8592",
+          "message": "refactor(http3): use caller-driven requests (#81)\n\n* refactor(http3): run requests in the caller's future and the connection task on the executor\n\n* docs(http3): describe the connection model, feature gates and internal types\n\n* Update README.md\n\n* refactor(http3): simplify connection and datagram drivers\n\n* chore(http3): update driver lifecycle dependency\n\n* fix(bench): stop the native HTTP/3 driver after measurement\n\n* fix(http3): wake settings waiters on graceful shutdown\n\n* Update README.md\n\n* style: fmt code\n\n* refactor(http3): align connection generic bounds\n\n* fix(http3): keep connections open after senders drop\n\n* fix: restore empty default features\n\n* refactor(http3): align request body bounds\n\n* docs(http3): align request method documentation\n\n* docs(http3): clarify request recovery boundary\n\n* fix(http3): drain connections when the last sender drops\n\n* docs(http3): clarify generic executor implementations\n\n* docs(quic): require idempotent connection close\n\n* perf(http3): avoid repeated shutdown cancellation\n\n* fix(http3): preserve CONNECT permission errors while draining\n\n* style: fmt code\n\n* refactor(http3): unify client task structure",
+          "timestamp": "2026-09-23T09:18:45+08:00",
+          "tree_id": "10fa6a744d1b4d7d071aae0bbb2a2d37be55b3da",
+          "url": "https://github.com/0x676e67/hwire/commit/eb4f614c8df160bd4a1bd8a27b5372d7c64d8592"
+        },
+        "date": 1790126567359,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "http1_consecutive_x1_both_100kb",
+            "value": 94379,
+            "range": "± 23377.15",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http1_consecutive_x1_both_10mb",
+            "value": 6380107,
+            "range": "± 405188.51",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http1_consecutive_x1_empty",
+            "value": 21730,
+            "range": "± 780.33",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http1_consecutive_x1_req_10b",
+            "value": 24375,
+            "range": "± 582.20",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_consecutive_x1_empty",
+            "value": 34440,
+            "range": "± 1961.15",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_consecutive_x1_req_100kb",
+            "value": 105916,
+            "range": "± 2569.64",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_consecutive_x1_req_10b",
+            "value": 41000201,
+            "range": "± 5816.23",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_empty",
+            "value": 85700,
+            "range": "± 3624.14",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_req_10kb_100_chunks",
+            "value": 16487526,
+            "range": "± 16505715.72",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_req_10kb_100_chunks_adaptive_window",
+            "value": 40804170,
+            "range": "± 12785854.34",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_req_10kb_100_chunks_max_window",
+            "value": 24618724,
+            "range": "± 16264692.00",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_req_10mb",
+            "value": 53096555,
+            "range": "± 392410.49",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_res_10mb",
+            "value": 52509287,
+            "range": "± 404315.23",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_res_1mb",
+            "value": 5689071,
+            "range": "± 73782.60",
             "unit": "ns/iter"
           }
         ]
