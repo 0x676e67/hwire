@@ -1,6 +1,6 @@
 [package]
 name = "hwire"
-version = "0.2.5"
+version = "0.2.6"
 description = "Async HTTP, down to the wire"
 keywords = ["http", "client"]
 categories = ["web-programming::http-client"]

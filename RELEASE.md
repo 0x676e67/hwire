@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## hwire [0.2.6](https://github.com/0x676e67/hwire/compare/v0.2.5...v0.2.6) - 2026-09-23
+
+
+
+### Refactor
+
+- *(http3)* Use named polling futures ([#82](https://github.com/0x676e67/hwire/issues/82)) - ([85530ad](https://github.com/0x676e67/hwire/commit/85530ada7a77a3b8d806c1c4bfe131e8d7d2e5a8))
+
+### Miscellaneous Tasks
+
+- Update hwire repository links ([#83](https://github.com/0x676e67/hwire/issues/83)) - ([7c0760d](https://github.com/0x676e67/hwire/commit/7c0760d467707c49cfd0329d18ebf40a0ffccde5))
+
 ## [0.2.5](https://github.com/0x676e67/wreq-proto/compare/wreq-proto-v0.2.4...wreq-proto-v0.2.5) - 2026-05-31
 
 ### Fixed

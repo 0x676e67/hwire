@@ -754,7 +754,7 @@ checksum = "135b12329e5e3ce057a9f972339ea52bc954fe1e9358ef27f95e89716fbc5424"
 
 [[package]]
 name = "hwire"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "bytes",
  "compio",
@@ -2017,3 +2017,13 @@ name = "zmij"
 version = "1.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
+
+[[patch.unused]]
+name = "http3"
+version = "0.1.1"
+source = "git+https://github.com/0x676e67/http3?rev=ec227449ecf66a129b47529352b8a0954d005f3d#ec227449ecf66a129b47529352b8a0954d005f3d"
+
+[[patch.unused]]
+name = "http3-datagram"
+version = "0.1.1"
+source = "git+https://github.com/0x676e67/http3?rev=ec227449ecf66a129b47529352b8a0954d005f3d#ec227449ecf66a129b47529352b8a0954d005f3d"
