@@ -237,7 +237,8 @@ async fn informational_content_length_does_not_set_final_body_length() {
                 .resolve_request()
                 .await
                 .unwrap();
-            for length in ["0", "123"] {
+            // More heads than one poll budget must still reach the final response.
+            for length in ["0", "123"].into_iter().cycle().take(40) {
                 stream
                     .send_response(
                         Response::builder()

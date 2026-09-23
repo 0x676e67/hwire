@@ -3,24 +3,24 @@
 #[cfg(feature = "http3-datagram")]
 use std::sync::Arc;
 use std::{
-    future::{poll_fn, Future},
+    future::Future,
     io,
-    pin::{pin, Pin},
+    pin::Pin,
     task::{ready, Context, Poll},
 };
 
 use bytes::{Buf, Bytes};
-use futures_util::future::{try_join, BoxFuture};
 use http::Response;
 use http3::quic;
+use pin_project_lite::pin_project;
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
     sync::{mpsc, oneshot},
 };
-use tokio_util::sync::{CancellationToken, PollSender};
+use tokio_util::sync::{CancellationToken, PollSender, WaitForCancellationFutureOwned};
 
 use super::{
-    client::{cooperate, invalid_datagram, H3ClientFuture, RecvGuard, SendGuard, CHUNK},
+    client::{invalid_datagram_error, H3ClientFuture, RecvGuard, SendGuard, CHUNK},
     shared::Active,
 };
 use crate::{
@@ -34,6 +34,11 @@ use crate::{
     conn::http3::datagram::Pending,
     proto::http3::datagram::{Registration, RequestState},
 };
+
+// pin_project_lite does not support cfg on fields; no registration is
+// stored when HTTP Datagrams are disabled.
+#[cfg(not(feature = "http3-datagram"))]
+type Registration = ();
 
 /// Write commands from the tunnel to its pump task; acknowledgments carry
 /// the transport result back.
@@ -56,34 +61,41 @@ struct H3Upgraded {
     datagrams: Option<Arc<RequestState>>,
 }
 
-/// Owns a CONNECT transfer and its admission slot until both directions
-/// finish. A failed transfer reports its cause to the tunnel reader. Dropping
-/// the task cancels unfinished directions and releases its admission slot.
-pub struct UpgradeTask {
-    // The transfer keeps its existing allocation because http3 exposes async
-    // send/finish operations without public poll equivalents.
-    transfer: Option<BoxFuture<'static, (Result<()>, Option<chan::Sender>)>>,
-    active: Option<Active>,
-    #[cfg(feature = "http3-datagram")]
-    registration: Option<Registration>,
+pin_project! {
+    /// Owns a CONNECT transfer and its admission slot until both directions
+    /// finish. A failed transfer reports its cause to the tunnel reader. Dropping
+    /// the task cancels unfinished directions and releases its admission slot.
+    pub struct UpgradeTask<S, R>
+    where
+        S: quic::SendStream<Bytes>,
+        R: quic::RecvStream,
+    {
+        #[pin]
+        transfer: Option<Transfer<S, R>>,
+        active: Option<Active>,
+        registration: Option<Registration>,
+    }
 }
 
 // ===== impl UpgradeTask =====
 
-impl Future for UpgradeTask {
+impl<S, R> Future for UpgradeTask<S, R>
+where
+    S: quic::SendStream<Bytes>,
+    R: quic::RecvStream,
+{
     type Output = ();
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
-        let this = self.get_mut();
-        let Some(transfer) = this.transfer.as_mut() else {
+        let mut this = self.project();
+        let Some(transfer) = this.transfer.as_mut().as_pin_mut() else {
             return Poll::Ready(());
         };
-        let (result, body) = ready!(transfer.as_mut().poll(cx));
-        this.transfer = None;
+        let (result, body) = ready!(transfer.poll(cx));
+        this.transfer.set(None);
         if let (Err(error), Some(mut body), Some(active)) = (result, body, this.active.as_ref()) {
             body.send_error(active.shared().error_or(error));
         }
-        #[cfg(feature = "http3-datagram")]
         this.registration.take();
         this.active.take();
         Poll::Ready(())
@@ -101,18 +113,18 @@ pub(super) enum TunnelDatagrams {
 /// Turns a successful CONNECT into an upgraded tunnel. Both stream directions
 /// move to an executor task that reads eagerly, so peer resets surface even
 /// while the tunnel is idle.
-pub(super) fn tunnel<Q, S, R, E>(
-    send: SendGuard<S>,
-    recv: RecvGuard<R>,
+pub(super) fn tunnel<Q, E>(
+    send: SendGuard<super::client::SendStream<Q::BidiStream>>,
+    recv: RecvGuard<super::client::RecvStream<Q::BidiStream>>,
     mut headers: Response<()>,
     active: Active,
     #[cfg(feature = "http3-datagram")] datagrams: TunnelDatagrams,
     exec: &E,
 ) -> Response<Incoming>
 where
-    S: quic::SendStream<Bytes> + Send + 'static,
-    R: quic::RecvStream + Send + 'static,
     Q: rt::quic::Connection<Bytes>,
+    <Q::BidiStream as rt::quic::BidiStream<Bytes>>::SendStream: Send + 'static,
+    <Q::BidiStream as rt::quic::BidiStream<Bytes>>::RecvStream: Send + 'static,
     E: Http3ClientConnExec<Q>,
 {
     #[cfg(feature = "http3-datagram")]
@@ -132,6 +144,8 @@ where
 
     #[cfg(not(feature = "http3-datagram"))]
     let invalid: Option<CancellationToken> = None;
+    #[cfg(not(feature = "http3-datagram"))]
+    let registration = None;
     let (body, rx) = chan::channel(false);
     let (tx, writes) = mpsc::channel(1);
     let io = H3Upgraded {
@@ -164,145 +178,242 @@ where
 
     exec.execute_h3_future(H3ClientFuture::Upgrade {
         task: UpgradeTask {
-            transfer: Some(Box::pin(transfer(send, recv, body, writes, invalid))),
+            transfer: Some(Transfer {
+                send: Some(SendStream::new(send, writes)),
+                recv: Some(RecvStream {
+                    recv,
+                    body: Some(body),
+                    data: None,
+                    data_done: false,
+                }),
+                invalid: invalid.map(CancellationToken::cancelled_owned),
+            }),
             active: Some(active),
-            #[cfg(feature = "http3-datagram")]
             registration,
         },
     });
+
     if let Some(io) = io {
         pending.fulfill(io);
     }
+
     headers.map(|()| Incoming::empty())
 }
 
-/// Pumps both directions, returning the reader sender when an error needs reporting.
-async fn transfer<S, R>(
-    send: SendGuard<S>,
-    recv: RecvGuard<R>,
-    body: chan::Sender,
-    writes: mpsc::Receiver<Write>,
-    invalid: Option<CancellationToken>,
-) -> (Result<()>, Option<chan::Sender>)
+pin_project! {
+    /// Polls both tunnel directions independently until both finish or either
+    /// fails. The reader sender is returned so the task can report an error.
+    struct Transfer<S, R>
+    where
+        S: quic::SendStream<Bytes>,
+        R: quic::RecvStream,
+    {
+        send: Option<SendStream<S>>,
+        recv: Option<RecvStream<R>>,
+        #[pin]
+        invalid: Option<WaitForCancellationFutureOwned>,
+    }
+}
+
+// ===== impl Transfer =====
+
+impl<S, R> Future for Transfer<S, R>
 where
     S: quic::SendStream<Bytes>,
     R: quic::RecvStream,
 {
-    let mut body = Some(body);
-    let result = {
-        let mut invalid_watch = pin!(invalid_datagram(invalid));
-        let mut transfer = pin!(try_join(
-            send_stream(send, writes),
-            recv_stream(recv, &mut body)
-        ));
-        poll_fn(|cx| {
-            if let Poll::Ready(error) = invalid_watch.as_mut().poll(cx) {
-                return Poll::Ready(Err(error));
-            }
-            transfer.as_mut().poll(cx)
-        })
-        .await
-    };
+    type Output = (Result<()>, Option<chan::Sender>);
 
-    (result.map(|_| ()), body)
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.project();
+        if this
+            .invalid
+            .as_pin_mut()
+            .is_some_and(|invalid| invalid.poll(cx).is_ready())
+        {
+            return Poll::Ready((
+                Err(invalid_datagram_error()),
+                this.recv.as_mut().and_then(|recv| recv.body.take()),
+            ));
+        }
+        if let Some(send) = this.send.as_mut() {
+            match Pin::new(send).poll(cx) {
+                Poll::Ready(Ok(())) => *this.send = None,
+                Poll::Ready(Err(error)) => {
+                    return Poll::Ready((
+                        Err(error),
+                        this.recv.as_mut().and_then(|recv| recv.body.take()),
+                    ));
+                }
+                Poll::Pending => {}
+            }
+        }
+        if let Some(recv) = this.recv.as_mut() {
+            match Pin::new(&mut *recv).poll(cx) {
+                Poll::Ready(Ok(())) => *this.recv = None,
+                Poll::Ready(Err(error)) => {
+                    return Poll::Ready((Err(error), recv.body.take()));
+                }
+                Poll::Pending => {}
+            }
+        }
+        if this.send.is_none() && this.recv.is_none() {
+            Poll::Ready((Ok(()), None))
+        } else {
+            Poll::Pending
+        }
+    }
 }
 
-/// Writes tunnel data until the application shuts down or the peer stops.
-async fn send_stream<S: quic::SendStream<Bytes>>(
-    mut send: SendGuard<S>,
-    mut rx: mpsc::Receiver<Write>,
-) -> Result<()> {
-    let mut budget = 0;
-    let mut stopped = false;
-    while let Some(write) = poll_fn(|cx| {
-        if let Poll::Ready(result) = send.stream.poll_stopped(cx) {
-            stopped = true;
-            return Poll::Ready(result.map(|_| None).map_err(Error::new_h3));
+/// Drives tunnel writes and flush barriers, acknowledging local shutdown before
+/// waiting for FIN delivery. The transfer task owns cancellation and admission.
+struct SendStream<S>
+where
+    S: quic::SendStream<Bytes>,
+{
+    send: SendGuard<S>,
+    rx: mpsc::Receiver<Write>,
+    finish: Option<oneshot::Sender<Result<()>>>,
+}
+
+impl<S> Unpin for SendStream<S> where S: quic::SendStream<Bytes> {}
+
+// ===== impl SendStream =====
+
+impl<S> SendStream<S>
+where
+    S: quic::SendStream<Bytes>,
+{
+    fn new(send: SendGuard<S>, rx: mpsc::Receiver<Write>) -> Self {
+        Self {
+            send,
+            rx,
+            finish: None,
         }
-        rx.poll_recv(cx).map(Ok)
-    })
-    .await?
-    {
-        match write {
-            Write::Data(data) => send.stream.send_data(data).await.map_err(Error::new_h3)?,
-            Write::Flush(ack) => {
-                let _ = ack.send(Ok(()));
+    }
+}
+
+impl<S> Future for SendStream<S>
+where
+    S: quic::SendStream<Bytes>,
+{
+    type Output = Result<()>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
+        if this.send.finished {
+            return this
+                .send
+                .stream
+                .poll_stopped(cx)
+                .map(|result| result.map(|_| ()).map_err(Error::new_h3));
+        }
+        for _ in 0..32 {
+            if this.finish.is_some() {
+                ready!(this.send.stream.poll_finish(cx)).map_err(Error::new_h3)?;
+                this.send.finished = true;
+                if let Some(ack) = this.finish.take() {
+                    let _ = ack.send(Ok(()));
+                }
+                // Shutdown acknowledges local FIN submission; drain still waits for delivery.
+                return this
+                    .send
+                    .stream
+                    .poll_stopped(cx)
+                    .map(|result| result.map(|_| ()).map_err(Error::new_h3));
             }
-            Write::Finish(ack) => {
+            if let Poll::Ready(result) = this.send.stream.poll_stopped(cx) {
                 #[cfg(feature = "http3-datagram")]
-                if let Some(datagrams) = &send.datagrams {
+                if let Some(datagrams) = &this.send.datagrams {
                     datagrams.close_send();
                 }
-                send.stream.finish().await.map_err(Error::new_h3)?;
-                send.finished = true;
-                let _ = ack.send(Ok(()));
-                // Acknowledge the local shutdown immediately, but keep drain
-                // waiting until QUIC confirms FIN or the peer stops receiving.
-                return poll_fn(|cx| send.stream.poll_stopped(cx))
-                    .await
-                    .map(|_| ())
-                    .map_err(Error::new_h3);
+                return Poll::Ready(result.map(|_| ()).map_err(Error::new_h3));
+            }
+            // Flush accepted DATA before waiting for another command, even when
+            // the application never calls flush or sends any more bytes.
+            ready!(this.send.stream.poll_ready(cx)).map_err(Error::new_h3)?;
+            match ready!(this.rx.poll_recv(cx)) {
+                Some(Write::Data(data)) => this
+                    .send
+                    .stream
+                    .start_send_data(data)
+                    .map_err(Error::new_h3)?,
+                Some(Write::Flush(ack)) => {
+                    let _ = ack.send(Ok(()));
+                }
+                Some(Write::Finish(ack)) => {
+                    #[cfg(feature = "http3-datagram")]
+                    if let Some(datagrams) = &this.send.datagrams {
+                        datagrams.close_send();
+                    }
+                    this.finish = Some(ack);
+                }
+                None => return Poll::Ready(Err(Error::new_canceled())),
             }
         }
-        cooperate(&mut budget).await;
-    }
-
-    if stopped {
-        #[cfg(feature = "http3-datagram")]
-        if let Some(datagrams) = &send.datagrams {
-            datagrams.close_send();
-        }
-        Ok(())
-    } else {
-        Err(Error::new_canceled())
+        cx.waker().wake_by_ref();
+        Poll::Pending
     }
 }
 
-/// Forwards received data to the tunnel reader and closes it at FIN.
-async fn recv_stream<R: quic::RecvStream>(
-    mut recv: RecvGuard<R>,
-    body: &mut Option<chan::Sender>,
-) -> Result<()> {
-    let Some(sender) = body.as_mut() else {
-        return Err(Error::new_canceled());
-    };
-    let mut budget = 0;
-    while let Some(mut data) = poll_fn(|cx| {
-        if sender.poll_closed(cx).is_ready() {
-            return Poll::Ready(Err(Error::new_canceled()));
+/// Forwards received DATA with channel backpressure and delivers EOF after
+/// trailers. The current QUIC buffer stays here until the reader accepts it.
+struct RecvStream<R: quic::RecvStream> {
+    recv: RecvGuard<R>,
+    body: Option<chan::Sender>,
+    data: Option<Bytes>,
+    data_done: bool,
+}
+
+// ===== impl RecvStream =====
+
+impl<R: quic::RecvStream> Unpin for RecvStream<R> {}
+
+impl<R: quic::RecvStream> Future for RecvStream<R> {
+    type Output = Result<()>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
+        let Some(sender) = this.body.as_mut() else {
+            return Poll::Ready(Ok(()));
+        };
+        for _ in 0..32 {
+            if sender.poll_closed(cx).is_ready() {
+                return Poll::Ready(Err(Error::new_canceled()));
+            }
+            if let Some(data) = this.data.as_mut() {
+                if data.has_remaining() {
+                    ready!(sender.poll_ready(cx))?;
+                    let size = data.remaining().min(CHUNK);
+                    sender
+                        .send_data(data.copy_to_bytes(size))
+                        .map_err(|_| Error::new_canceled())?;
+                    continue;
+                }
+                this.data = None;
+            }
+            if !this.data_done {
+                match ready!(this.recv.stream.poll_recv_data(cx)).map_err(Error::new_h3)? {
+                    Some(mut data) => {
+                        this.data = Some(data.copy_to_bytes(data.remaining()));
+                        continue;
+                    }
+                    None => this.data_done = true,
+                }
+            }
+            ready!(this.recv.stream.poll_recv_trailers(cx)).map_err(Error::new_h3)?;
+            this.recv.finished = true;
+            #[cfg(feature = "http3-datagram")]
+            if let Some(datagrams) = &this.recv.datagrams {
+                datagrams.close_recv();
+            }
+            // Dropping the sender delivers EOF to the tunnel reader.
+            this.body.take();
+            return Poll::Ready(Ok(()));
         }
-        recv.stream.poll_recv_data(cx).map_err(Error::new_h3)
-    })
-    .await?
-    {
-        while data.has_remaining() {
-            poll_fn(|cx| sender.poll_ready(cx)).await?;
-            let size = data.remaining().min(CHUNK);
-            sender
-                .send_data(data.copy_to_bytes(size))
-                .map_err(|_| Error::new_canceled())?;
-            cooperate(&mut budget).await;
-        }
-        cooperate(&mut budget).await;
+        cx.waker().wake_by_ref();
+        Poll::Pending
     }
-
-    poll_fn(|cx| {
-        if sender.poll_closed(cx).is_ready() {
-            return Poll::Ready(Err(Error::new_canceled()));
-        }
-        recv.stream.poll_recv_trailers(cx).map_err(Error::new_h3)
-    })
-    .await?;
-
-    recv.finished = true;
-    #[cfg(feature = "http3-datagram")]
-    if let Some(datagrams) = &recv.datagrams {
-        datagrams.close_recv();
-    }
-
-    // Dropping the sender delivers EOF to the tunnel reader.
-    body.take();
-    Ok(())
 }
 
 /// The error a closed tunnel reports to the application.

@@ -713,7 +713,7 @@ dependencies = [
 [[package]]
 name = "http3"
 version = "0.1.1"
-source = "git+https://github.com/0x676e67/http3?rev=ec227449ecf66a129b47529352b8a0954d005f3d#ec227449ecf66a129b47529352b8a0954d005f3d"
+source = "git+https://github.com/0x676e67/http3?rev=57a639040f7e0105d55cd13efa90869971d81e1e#57a639040f7e0105d55cd13efa90869971d81e1e"
 dependencies = [
  "bytes",
  "fastrand",
@@ -728,7 +728,7 @@ dependencies = [
 [[package]]
 name = "http3-datagram"
 version = "0.1.1"
-source = "git+https://github.com/0x676e67/http3?rev=ec227449ecf66a129b47529352b8a0954d005f3d#ec227449ecf66a129b47529352b8a0954d005f3d"
+source = "git+https://github.com/0x676e67/http3?rev=57a639040f7e0105d55cd13efa90869971d81e1e#57a639040f7e0105d55cd13efa90869971d81e1e"
 dependencies = [
  "bytes",
  "http3",
@@ -737,7 +737,7 @@ dependencies = [
 [[package]]
 name = "http3-quic"
 version = "0.1.1"
-source = "git+https://github.com/0x676e67/http3?rev=ec227449ecf66a129b47529352b8a0954d005f3d#ec227449ecf66a129b47529352b8a0954d005f3d"
+source = "git+https://github.com/0x676e67/http3?rev=57a639040f7e0105d55cd13efa90869971d81e1e#57a639040f7e0105d55cd13efa90869971d81e1e"
 dependencies = [
  "bytes",
  "futures-util",

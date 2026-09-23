@@ -8,7 +8,7 @@ use std::{
     future::{pending, poll_fn, Future},
     pin::{pin, Pin},
     sync::Arc,
-    task::{Context, Poll, Waker},
+    task::{ready, Context, Poll, Waker},
 };
 
 use bytes::{Buf, Bytes};
@@ -30,7 +30,7 @@ use super::{
     body::{PipeGuard, RecvBody},
     shared::{Active, Shared},
     transport::{Stream, Transport},
-    upgrade,
+    upgrade::{self, UpgradeTask},
 };
 use crate::{
     body::Incoming,
@@ -47,15 +47,21 @@ use crate::{
     proto::http3::datagram::{Drive, RequestState},
 };
 
+/// Protocol adapter for the send half of a bidirectional QUIC stream.
+pub(super) type SendStream<S> = Stream<<S as rt::quic::BidiStream<Bytes>>::SendStream, Bytes>;
+
 /// Protocol adapter for the receive half of a bidirectional QUIC stream.
-type RecvStream<S> = Stream<<S as rt::quic::BidiStream<Bytes>>::RecvStream, Bytes>;
+pub(super) type RecvStream<S> = Stream<<S as rt::quic::BidiStream<Bytes>>::RecvStream, Bytes>;
 
 /// Largest chunk handed to the QUIC send half at once.
 pub(super) const CHUNK: usize = 16 * 1024;
 
 /// Send half of a request stream. Dropping it before `finished` resets the
 /// send direction, so a completed FIN must set the flag first.
-pub(super) struct SendGuard<S: quic::SendStream<Bytes>> {
+pub(super) struct SendGuard<S>
+where
+    S: quic::SendStream<Bytes>,
+{
     #[cfg(feature = "http3-datagram")]
     pub(super) datagrams: Option<Arc<RequestState>>,
     pub(super) stream: RequestStream<S, Bytes>,
@@ -64,7 +70,10 @@ pub(super) struct SendGuard<S: quic::SendStream<Bytes>> {
 
 /// Receive half of a request stream. Dropping it before `finished` sends
 /// STOP_SENDING with `code`, which defaults to a local cancellation.
-pub(super) struct RecvGuard<S: quic::RecvStream> {
+pub(super) struct RecvGuard<S>
+where
+    S: quic::RecvStream,
+{
     #[cfg(feature = "http3-datagram")]
     pub(super) datagrams: Option<Arc<RequestState>>,
     pub(super) stream: RequestStream<S, Bytes>,
@@ -76,7 +85,10 @@ pub(super) struct RecvGuard<S: quic::RecvStream> {
 /// connection closes, then reports the outcome to the handle. Dropping it
 /// unfinished terminates the connection, so an executor that discards it
 /// cannot leave requests waiting.
-pub struct ConnTask<Q: rt::quic::Connection<Bytes>> {
+pub struct ConnTask<Q>
+where
+    Q: rt::quic::Connection<Bytes>,
+{
     #[cfg(feature = "http3-datagram")]
     datagrams: Option<Drive>,
     driver: http3::client::Connection<Transport<Q>, Bytes>,
@@ -85,9 +97,7 @@ pub struct ConnTask<Q: rt::quic::Connection<Bytes>> {
     done: Option<oneshot::Sender<Result<()>>>,
 }
 
-/// No fields are structurally pinned: protocol and QUIC operations take
-/// `&mut self`, so moving the task never moves a pinned backend field.
-impl<Q: rt::quic::Connection<Bytes>> Unpin for ConnTask<Q> {}
+impl<Q> Unpin for ConnTask<Q> where Q: rt::quic::Connection<Bytes> {}
 
 pin_project! {
     /// Background work accepted by the HTTP/3 client executor. Requests and
@@ -98,7 +108,8 @@ pin_project! {
         Q: rt::quic::Connection<Bytes>,
     {
         Task {
-            task: Pin<Box<ConnTask<Q>>>,
+            #[pin]
+            task: ConnTask<Q>,
         },
         Pipe {
             #[pin]
@@ -106,7 +117,7 @@ pin_project! {
         },
         Upgrade {
             #[pin]
-            task: upgrade::UpgradeTask,
+            task: UpgradeTask<SendStream<Q::BidiStream>, RecvStream<Q::BidiStream>>,
         },
     }
 }
@@ -127,12 +138,15 @@ pin_project! {
 
 // ===== impl H3ClientFuture =====
 
-impl<Q: rt::quic::Connection<Bytes>> Future for H3ClientFuture<Q> {
+impl<Q> Future for H3ClientFuture<Q>
+where
+    Q: rt::quic::Connection<Bytes>,
+{
     type Output = ();
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
         match self.project() {
-            H3ClientFutureProject::Task { task } => task.as_mut().poll(cx),
+            H3ClientFutureProject::Task { task } => task.poll(cx),
             H3ClientFutureProject::Pipe { pipe } => pipe.poll(cx),
             H3ClientFutureProject::Upgrade { task } => task.poll(cx),
         }
@@ -174,7 +188,7 @@ impl<S: quic::RecvStream> Future for PipeMap<S> {
         } else if !guard.watch(cx) {
             Err(Error::new_canceled())
         } else {
-            std::task::ready!(pipe.as_mut().poll(cx))
+            ready!(pipe.as_mut().poll(cx))
         };
 
         this.invalid.set(None);
@@ -192,7 +206,10 @@ impl<S: quic::RecvStream> Future for PipeMap<S> {
 
 // ===== impl ConnTask =====
 
-impl<Q: rt::quic::Connection<Bytes>> ConnTask<Q> {
+impl<Q> ConnTask<Q>
+where
+    Q: rt::quic::Connection<Bytes>,
+{
     /// Wraps the protocol driver and the Datagram driver; `done` reports the
     /// outcome to the handle.
     pub(crate) fn new(
@@ -221,7 +238,10 @@ impl<Q: rt::quic::Connection<Bytes>> ConnTask<Q> {
     }
 }
 
-impl<Q: rt::quic::Connection<Bytes>> Future for ConnTask<Q> {
+impl<Q> Future for ConnTask<Q>
+where
+    Q: rt::quic::Connection<Bytes>,
+{
     type Output = ();
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
@@ -294,7 +314,10 @@ impl<Q: rt::quic::Connection<Bytes>> Future for ConnTask<Q> {
     }
 }
 
-impl<Q: rt::quic::Connection<Bytes>> Drop for ConnTask<Q> {
+impl<Q> Drop for ConnTask<Q>
+where
+    Q: rt::quic::Connection<Bytes>,
+{
     fn drop(&mut self) {
         if self.done.is_some() {
             self.shared
@@ -312,7 +335,10 @@ impl<Q: rt::quic::Connection<Bytes>> Drop for ConnTask<Q> {
 
 // ===== impl SendGuard =====
 
-impl<S: quic::SendStream<Bytes>> Drop for SendGuard<S> {
+impl<S> Drop for SendGuard<S>
+where
+    S: quic::SendStream<Bytes>,
+{
     fn drop(&mut self) {
         if !self.finished {
             let code = Code::H3_REQUEST_CANCELLED;
@@ -490,7 +516,7 @@ where
         let invalid: Option<CancellationToken> = None;
 
         let (send, recv) = stream.split();
-        let send = SendGuard {
+        let mut send = SendGuard {
             #[cfg(feature = "http3-datagram")]
             datagrams: datagrams.cloned(),
             stream: send,
@@ -511,7 +537,7 @@ where
         // read before anything is finished.
         let initial_response = if connect {
             let headers = {
-                let mut response = pin!(response_headers(&mut recv));
+                let mut response = pin!(ResponseFutMap { recv: &mut recv });
                 poll_fn(|cx| {
                     if let Poll::Ready(error) = invalid_watch.as_mut().poll(cx) {
                         return Poll::Ready(Err(error));
@@ -530,7 +556,7 @@ where
                     }
                     Some(registration) => upgrade::TunnelDatagrams::Ordinary(registration),
                 };
-                return Ok(upgrade::tunnel::<Q, _, _, _>(
+                return Ok(upgrade::tunnel::<Q, _>(
                     send,
                     recv,
                     headers,
@@ -549,20 +575,20 @@ where
         // the head is in, so a drain cannot discard an unacknowledged FIN.
         let mut finished = None;
         let mut pipe = if body.is_end_stream() {
-            finished = Some(
-                finish(send)
-                    .await
-                    .map_err(|error| lost(shared.error_or(error)))?,
-            );
+            Finish { send: &mut send }
+                .await
+                .map_err(|error| lost(shared.error_or(error)))?;
+            finished = Some(send);
             None
         } else {
-            Some(Box::pin(pipe_to_send_stream(send, body, length)) as BoxFuture<'static, Result<()>>)
+            Some(Box::pin(PipeToSendStream::new(send, body, length))
+                as BoxFuture<'static, Result<()>>)
         };
 
         let mut headers = match initial_response {
             Some(headers) => headers,
             None => {
-                let mut response = pin!(response_headers(&mut recv));
+                let mut response = pin!(ResponseFutMap { recv: &mut recv });
                 poll_fn(|cx| {
                     if let Some(pending) = pipe.as_mut() {
                         match pending.as_mut().poll(cx) {
@@ -664,18 +690,35 @@ pub(super) fn invalid_datagram_error() -> Error {
 
 /// Closes the send direction of an empty request body. After a peer STOP_SENDING
 /// the guard stays unfinished so dropping it answers with a reset.
-async fn finish<S: quic::SendStream<Bytes>>(mut send: SendGuard<S>) -> Result<SendGuard<S>> {
-    match send.stream.finish().await {
-        Ok(()) => {}
-        Err(StreamError::RemoteTerminate { .. }) => return Ok(send),
-        Err(error) => return Err(Error::new_h3(error)),
+struct Finish<'a, S>
+where
+    S: quic::SendStream<Bytes>,
+{
+    send: &'a mut SendGuard<S>,
+}
+
+// ===== impl Finish =====
+
+impl<S> Future for Finish<'_, S>
+where
+    S: quic::SendStream<Bytes>,
+{
+    type Output = Result<()>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let send = &mut self.get_mut().send;
+        match ready!(send.stream.poll_finish(cx)) {
+            Ok(()) => {}
+            Err(StreamError::RemoteTerminate { .. }) => return Poll::Ready(Ok(())),
+            Err(error) => return Poll::Ready(Err(Error::new_h3(error))),
+        }
+        send.finished = true;
+        #[cfg(feature = "http3-datagram")]
+        if let Some(datagrams) = &send.datagrams {
+            datagrams.close_send();
+        }
+        Poll::Ready(Ok(()))
     }
-    send.finished = true;
-    #[cfg(feature = "http3-datagram")]
-    if let Some(datagrams) = &send.datagrams {
-        datagrams.close_send();
-    }
-    Ok(send)
 }
 
 /// Failure before the request left the caller; the request is returned.
@@ -694,115 +737,180 @@ fn lost<B>(error: Error) -> TrySendError<Request<B>> {
     }
 }
 
-/// Streams the request body and FIN, then waits for the acknowledgment or
-/// the peer's STOP_SENDING so a drain cannot discard queued request body bytes.
-async fn pipe_to_send_stream<S, B>(
-    mut send: SendGuard<S>,
-    body: B,
-    mut remaining: Option<u64>,
-) -> Result<()>
+pin_project! {
+    /// Sends a Body through the native HTTP/3 stream, retaining only its current
+    /// chunk across polls. Completion includes FIN acknowledgment or peer STOP.
+    struct PipeToSendStream<S, B>
+    where
+        S: quic::SendStream<Bytes>,
+        B: Body,
+    {
+        send: SendGuard<S>,
+        #[pin]
+        body: B,
+        data: Option<B::Data>,
+        remaining: Option<u64>,
+        trailers_sent: bool,
+        finishing: bool,
+    }
+}
+
+// ===== impl PipeToSendStream =====
+
+impl<S, B> PipeToSendStream<S, B>
+where
+    S: quic::SendStream<Bytes>,
+    B: Body,
+{
+    fn new(send: SendGuard<S>, body: B, remaining: Option<u64>) -> Self {
+        Self {
+            send,
+            body,
+            data: None,
+            remaining,
+            trailers_sent: false,
+            finishing: false,
+        }
+    }
+}
+
+impl<S, B> Future for PipeToSendStream<S, B>
 where
     S: quic::SendStream<Bytes>,
     B: Body,
     B::Error: Into<BoxError>,
 {
-    let mut body = pin!(body);
-    let mut trailers_sent = false;
-    let mut budget = 0;
-    let mut stopped = false;
-    while let Some(frame) = poll_fn(|cx| {
-        // Check cancellation before Body: continuously ready empty frames never
-        // reach the QUIC writer, so checking only on Pending would miss STOP.
-        // A complete early response remains valid: RFC 9114, Section 4.1.
-        // https://www.rfc-editor.org/rfc/rfc9114.html#section-4.1
-        if let Poll::Ready(result) = send.stream.poll_stopped(cx) {
-            stopped = true;
-            return Poll::Ready(result.err().map(|error| Err(Error::new_h3(error))));
+    type Output = Result<()>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let mut this = self.project();
+        if this.send.finished {
+            return this
+                .send
+                .stream
+                .poll_stopped(cx)
+                .map(|result| result.map(|_| ()).map_err(Error::new_h3));
         }
-        body.as_mut()
-            .poll_frame(cx)
-            .map(|frame| frame.map(|result| result.map_err(Error::new_user_body)))
-    })
-    .await
-    {
-        let frame = frame?;
-        if trailers_sent {
-            return Err(Error::new_user_body("body frame after trailers"));
-        }
-        match frame.into_data() {
-            Ok(mut data) => {
-                consume_length(&mut remaining, data.remaining()).map_err(Error::new_user_body)?;
-                while data.has_remaining() {
+        for _ in 0..32 {
+            if *this.finishing {
+                match ready!(this.send.stream.poll_finish(cx)) {
+                    Ok(()) => {}
+                    Err(StreamError::RemoteTerminate { .. }) => return Poll::Ready(Ok(())),
+                    Err(error) => return Poll::Ready(Err(Error::new_h3(error))),
+                }
+                // FIN is submitted, but admission remains held until it is acknowledged.
+                this.send.finished = true;
+                #[cfg(feature = "http3-datagram")]
+                if let Some(datagrams) = &this.send.datagrams {
+                    datagrams.close_send();
+                }
+                return this
+                    .send
+                    .stream
+                    .poll_stopped(cx)
+                    .map(|result| result.map(|_| ()).map_err(Error::new_h3));
+            }
+            // Check STOP even for an endlessly ready sequence of empty Body frames.
+            if let Poll::Ready(result) = this.send.stream.poll_stopped(cx) {
+                return Poll::Ready(result.map(|_| ()).map_err(Error::new_h3));
+            }
+            match ready!(this.send.stream.poll_ready(cx)) {
+                Ok(()) => {}
+                Err(StreamError::RemoteTerminate { .. }) => return Poll::Ready(Ok(())),
+                Err(error) => return Poll::Ready(Err(Error::new_h3(error))),
+            }
+            if let Some(data) = this.data.as_mut() {
+                if data.has_remaining() {
                     let size = data.remaining().min(CHUNK);
-                    match send.stream.send_data(data.copy_to_bytes(size)).await {
+                    match this.send.stream.start_send_data(data.copy_to_bytes(size)) {
                         Ok(()) => {}
-                        Err(StreamError::RemoteTerminate { .. }) => return Ok(()),
-                        Err(error) => return Err(Error::new_h3(error)),
+                        Err(StreamError::RemoteTerminate { .. }) => return Poll::Ready(Ok(())),
+                        Err(error) => return Poll::Ready(Err(Error::new_h3(error))),
                     }
-                    cooperate(&mut budget).await;
+                    continue;
                 }
+                *this.data = None;
             }
-            Err(frame) => {
-                if let Ok(trailers) = frame.into_trailers() {
-                    if remaining.is_some_and(|n| n != 0) {
-                        return Err(Error::new_user_body("body shorter than content-length"));
+            let frame = match ready!(this.body.as_mut().poll_frame(cx)) {
+                Some(frame) => frame.map_err(Error::new_user_body)?,
+                None => {
+                    if this.remaining.is_some_and(|n| n != 0) {
+                        return Poll::Ready(Err(Error::new_user_body(
+                            "body shorter than content-length",
+                        )));
                     }
-                    match send.stream.send_trailers(trailers).await {
-                        Ok(()) => {}
-                        Err(StreamError::RemoteTerminate { .. }) => return Ok(()),
-                        Err(error) => return Err(Error::new_h3(error)),
+                    *this.finishing = true;
+                    continue;
+                }
+            };
+            if *this.trailers_sent {
+                return Poll::Ready(Err(Error::new_user_body("body frame after trailers")));
+            }
+            match frame.into_data() {
+                Ok(data) => {
+                    consume_length(this.remaining, data.remaining())
+                        .map_err(Error::new_user_body)?;
+                    *this.data = Some(data);
+                }
+                Err(frame) => {
+                    if let Ok(trailers) = frame.into_trailers() {
+                        if this.remaining.is_some_and(|n| n != 0) {
+                            return Poll::Ready(Err(Error::new_user_body(
+                                "body shorter than content-length",
+                            )));
+                        }
+                        match this.send.stream.start_send_trailers(trailers) {
+                            Ok(()) => {}
+                            Err(StreamError::RemoteTerminate { .. }) => return Poll::Ready(Ok(())),
+                            Err(error) => return Poll::Ready(Err(Error::new_h3(error))),
+                        }
+                        *this.trailers_sent = true;
                     }
-                    trailers_sent = true;
                 }
             }
         }
-        cooperate(&mut budget).await;
+        cx.waker().wake_by_ref();
+        Poll::Pending
     }
-    if stopped {
-        return Ok(());
-    }
-    if remaining.is_some_and(|n| n != 0) {
-        return Err(Error::new_user_body("body shorter than content-length"));
-    }
-    match send.stream.finish().await {
-        Ok(()) => {}
-        Err(StreamError::RemoteTerminate { .. }) => return Ok(()),
-        Err(error) => return Err(Error::new_h3(error)),
-    }
-    send.finished = true;
-    #[cfg(feature = "http3-datagram")]
-    if let Some(datagrams) = &send.datagrams {
-        datagrams.close_send();
-    }
-    // FIN is only queued by finish(). Keep the exchange active until transport
-    // delivery or peer cancellation, so connection drain cannot discard it.
-    poll_fn(|cx| send.stream.poll_stopped(cx))
-        .await
-        .map(|_| ())
-        .map_err(Error::new_h3)
 }
 
 /// Reads the final response head, skipping informational responses.
-async fn response_headers<S: quic::RecvStream>(recv: &mut RecvGuard<S>) -> Result<Response<()>> {
-    let mut budget = 0;
-    let headers = loop {
-        let headers = recv.stream.recv_response().await.map_err(Error::new_h3)?;
-        if headers.status() == StatusCode::SWITCHING_PROTOCOLS {
-            recv.code = Code::H3_MESSAGE_ERROR;
-            return Err(Error::new_h3("HTTP/3 response cannot use status 101"));
+struct ResponseFutMap<'a, S>
+where
+    S: quic::RecvStream,
+{
+    recv: &'a mut RecvGuard<S>,
+}
+
+// ===== impl ResponseFutMap =====
+
+impl<S> Future for ResponseFutMap<'_, S>
+where
+    S: quic::RecvStream,
+{
+    type Output = Result<Response<()>>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let recv = &mut self.get_mut().recv;
+        for _ in 0..32 {
+            let headers = ready!(recv.stream.poll_recv_response(cx)).map_err(Error::new_h3)?;
+            if headers.status() == StatusCode::SWITCHING_PROTOCOLS {
+                recv.code = Code::H3_MESSAGE_ERROR;
+                return Poll::Ready(Err(Error::new_h3("HTTP/3 response cannot use status 101")));
+            }
+            if !headers.status().is_informational() {
+                return Poll::Ready(Ok(headers));
+            }
+            // Ignore the length on a response without content, but still validate
+            // the field syntax. RFC 9114, Section 4.1.2.
+            // https://www.rfc-editor.org/rfc/rfc9114.html#section-4.1.2
+            content_length(headers.headers()).inspect_err(|_| {
+                recv.code = Code::H3_MESSAGE_ERROR;
+            })?;
         }
-        if !headers.status().is_informational() {
-            break headers;
-        }
-        // Ignore the length on a response without content, but still validate
-        // the field syntax. RFC 9114, Section 4.1.2.
-        // https://www.rfc-editor.org/rfc/rfc9114.html#section-4.1.2
-        content_length(headers.headers()).inspect_err(|_| {
-            recv.code = Code::H3_MESSAGE_ERROR;
-        })?;
-        cooperate(&mut budget).await;
-    };
-    Ok(headers)
+        cx.waker().wake_by_ref();
+        Poll::Pending
+    }
 }
 
 /// Validates the request and returns its declared Content-Length.
@@ -869,24 +977,4 @@ pub(super) fn consume_length(remaining: &mut Option<u64>, size: usize) -> Result
             .ok_or("body exceeds content-length")?;
     }
     Ok(())
-}
-
-/// Yields after a burst of ready frames so one stream cannot starve the runtime.
-pub(super) async fn cooperate(budget: &mut usize) {
-    *budget += 1;
-    if *budget < 32 {
-        return;
-    }
-    *budget = 0;
-    let mut yielded = false;
-    poll_fn(|cx| {
-        if yielded {
-            Poll::Ready(())
-        } else {
-            yielded = true;
-            cx.waker().wake_by_ref();
-            Poll::Pending
-        }
-    })
-    .await;
 }

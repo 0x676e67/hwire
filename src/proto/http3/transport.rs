@@ -37,7 +37,11 @@ fn contract_error(reason: &str) -> http3::quic::StreamErrorIncoming {
 
 // ===== impl Transport =====
 
-impl<B: Buf, Q: quic::Connection<B>> http3::quic::Connection<B> for Transport<Q> {
+impl<B, Q> http3::quic::Connection<B> for Transport<Q>
+where
+    B: Buf,
+    Q: quic::Connection<B>,
+{
     type RecvStream = Stream<Q::RecvStream, B>;
     type OpenStreams = Transport<Q::OpenStreams>;
 
@@ -64,7 +68,11 @@ impl<B: Buf, Q: quic::Connection<B>> http3::quic::Connection<B> for Transport<Q>
     }
 }
 
-impl<B: Buf, Q: quic::OpenStreams<B>> http3::quic::OpenStreams<B> for Transport<Q> {
+impl<B, Q> http3::quic::OpenStreams<B> for Transport<Q>
+where
+    B: Buf,
+    Q: quic::OpenStreams<B>,
+{
     type SendStream = Stream<Q::SendStream, B>;
     type BidiStream = Stream<Q::BidiStream, B>;
 
@@ -99,7 +107,11 @@ impl<T, B> Stream<T, B> {
     }
 }
 
-impl<T: quic::SendStream<B>, B: Buf> http3::quic::SendStream<B> for Stream<T, B> {
+impl<T, B> http3::quic::SendStream<B> for Stream<T, B>
+where
+    T: quic::SendStream<B>,
+    B: Buf,
+{
     fn poll_ready(
         &mut self,
         cx: &mut Context<'_>,
@@ -161,7 +173,11 @@ impl<T: quic::SendStream<B>, B: Buf> http3::quic::SendStream<B> for Stream<T, B>
     }
 }
 
-impl<T: quic::SendStream<B>, B: Buf> http3::quic::SendStreamUnframed<B> for Stream<T, B> {
+impl<T, B> http3::quic::SendStreamUnframed<B> for Stream<T, B>
+where
+    T: quic::SendStream<B>,
+    B: Buf,
+{
     fn poll_send<D: Buf>(
         &mut self,
         cx: &mut Context<'_>,
@@ -172,7 +188,11 @@ impl<T: quic::SendStream<B>, B: Buf> http3::quic::SendStreamUnframed<B> for Stre
     }
 }
 
-impl<T: quic::RecvStream, B: Buf> http3::quic::RecvStream for Stream<T, B> {
+impl<T, B> http3::quic::RecvStream for Stream<T, B>
+where
+    T: quic::RecvStream,
+    B: Buf,
+{
     type Buf = T::Buf;
 
     fn poll_data(
@@ -191,7 +211,11 @@ impl<T: quic::RecvStream, B: Buf> http3::quic::RecvStream for Stream<T, B> {
     }
 }
 
-impl<T: quic::BidiStream<B>, B: Buf> http3::quic::BidiStream<B> for Stream<T, B> {
+impl<T, B> http3::quic::BidiStream<B> for Stream<T, B>
+where
+    T: quic::BidiStream<B>,
+    B: Buf,
+{
     type SendStream = Stream<T::SendStream, B>;
     type RecvStream = Stream<T::RecvStream, B>;
 
