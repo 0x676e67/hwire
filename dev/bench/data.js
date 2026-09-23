@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790133538702,
+  "lastUpdate": 1790146916898,
   "repoUrl": "https://github.com/0x676e67/hwire",
   "entries": {
     "end_to_end": [
@@ -11447,6 +11447,114 @@ window.BENCHMARK_DATA = {
             "name": "http2_parallel_x10_res_1mb",
             "value": 5542079,
             "range": "± 65544.37",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gngppz@gmail.com",
+            "name": "gngpp",
+            "username": "0x676e67"
+          },
+          "committer": {
+            "email": "gngppz@gmail.com",
+            "name": "gngpp",
+            "username": "0x676e67"
+          },
+          "distinct": true,
+          "id": "5fa0311bfb3d1389470f23d2b7020ef338af2635",
+          "message": "chore(deps): update http3 to 0.2.0",
+          "timestamp": "2026-09-23T11:15:17+08:00",
+          "tree_id": "b7b095596653f0ecf7913bf3288710775b892c3b",
+          "url": "https://github.com/0x676e67/hwire/commit/5fa0311bfb3d1389470f23d2b7020ef338af2635"
+        },
+        "date": 1790146916196,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "http1_consecutive_x1_both_100kb",
+            "value": 90786,
+            "range": "± 1985.09",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http1_consecutive_x1_both_10mb",
+            "value": 6332441,
+            "range": "± 480531.64",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http1_consecutive_x1_empty",
+            "value": 20935,
+            "range": "± 926.09",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http1_consecutive_x1_req_10b",
+            "value": 23419,
+            "range": "± 264.40",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_consecutive_x1_empty",
+            "value": 33852,
+            "range": "± 836.88",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_consecutive_x1_req_100kb",
+            "value": 105840,
+            "range": "± 2840.49",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_consecutive_x1_req_10b",
+            "value": 41000044,
+            "range": "± 5456.10",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_empty",
+            "value": 86080,
+            "range": "± 2683.33",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_req_10kb_100_chunks",
+            "value": 16313261,
+            "range": "± 16395199.95",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_req_10kb_100_chunks_adaptive_window",
+            "value": 32600834,
+            "range": "± 544718.56",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_req_10kb_100_chunks_max_window",
+            "value": 8078405,
+            "range": "± 274072.30",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_req_10mb",
+            "value": 95798051,
+            "range": "± 1628533.86",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_res_10mb",
+            "value": 54309713,
+            "range": "± 963872.73",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "http2_parallel_x10_res_1mb",
+            "value": 5482853,
+            "range": "± 78328.28",
             "unit": "ns/iter"
           }
         ]
