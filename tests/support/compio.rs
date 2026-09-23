@@ -1,4 +1,4 @@
-//! Compio-based executor and timer for wreq.
+//! Compio-based executor and timer for the test fixtures.
 #[path = "compio/future.rs"]
 pub mod future;
 #[path = "compio/io.rs"]
@@ -13,8 +13,8 @@ use std::{
 };
 
 use futures_util::future::LocalBoxFuture;
+use hwire::rt::{Executor, Sleep, Timer};
 use send_wrapper::SendWrapper;
-use wreq_proto::rt::{Executor, Sleep, Timer};
 
 /// Future executor that utilises the `compio` runtime.
 #[non_exhaustive]
@@ -60,7 +60,7 @@ impl CompioTimer {
 /// A sleep future wrapping a compio timer via SendWrapper.
 ///
 /// compio futures are `!Send` (thread-per-core), so we wrap in `SendWrapper`
-/// to satisfy wreq's `Send` bounds.
+/// to satisfy the `Sleep` trait's `Send` bound.
 struct CompioSleep {
     inner: SendWrapper<LocalBoxFuture<'static, ()>>,
 }

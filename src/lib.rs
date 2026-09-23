@@ -7,9 +7,10 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(all(test, feature = "nightly"), feature(test))]
 
-//! # wreq-proto
+//! # hwire
 //!
-//! [wreq](https://github.com/0x676e67/wreq) HTTP client protocol and utilities.
+//! An asynchronous HTTP library with streaming bodies and pluggable runtime and transport
+//! interfaces.
 //!
 //! Much of this codebase is adapted and refined from [hyper](https://github.com/hyperium/hyper),
 //! aiming to match its performance and reliability for asynchronous HTTP/1 and HTTP/2.

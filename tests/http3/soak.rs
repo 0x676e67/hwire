@@ -11,8 +11,8 @@ use std::{
 use bytes::{Buf, Bytes};
 use http::{Request, Response};
 use http_body_util::{BodyExt, Full};
+use hwire::{http3::Http3Options, rt::Executor};
 use tokio::{task::JoinSet, time::timeout};
-use wreq_proto::{http3::Http3Options, rt::Executor};
 
 #[derive(Clone, Default)]
 struct CountingExec(Arc<AtomicUsize>);
@@ -90,7 +90,7 @@ async fn cancellation_and_close() {
     let client_quic = client_quic.unwrap();
     let ((tx, driver), mut server) = tokio::join!(
         async {
-            wreq_proto::conn::http3::Builder::new(exec.clone())
+            hwire::conn::http3::Builder::new(exec.clone())
                 .options(Http3Options::builder().send_grease(false).build())
                 .handshake::<_, super::ClientBody>(crate::native::Connection::new(
                     client_quic.clone(),

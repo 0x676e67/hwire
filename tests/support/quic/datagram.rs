@@ -8,7 +8,7 @@ use futures_util::{
     stream::{self, BoxStream},
     StreamExt,
 };
-use wreq_proto::rt::quic::{
+use hwire::rt::quic::{
     ConnectionError, DatagramConnection, DatagramError, RecvDatagram, SendDatagram,
 };
 

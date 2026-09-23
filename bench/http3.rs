@@ -21,8 +21,8 @@ use std::{
 use bytes::{Buf, Bytes};
 use http::{Request, Response};
 use http_body_util::{BodyExt, Full};
+use hwire::{conn::http3::Builder, http3::Http3Options, rt::Executor};
 use tokio::{task::JoinSet, time::timeout};
-use wreq_proto::{conn::http3::Builder, http3::Http3Options, rt::Executor};
 
 #[derive(Clone, Default)]
 struct Exec {
@@ -59,7 +59,7 @@ impl<F: Future<Output = ()> + Send + 'static> Executor<F> for Exec {
 
 #[derive(Clone)]
 enum Sender {
-    Proto(wreq_proto::conn::http3::SendRequest<Full<Bytes>>),
+    Proto(hwire::conn::http3::SendRequest<Full<Bytes>>),
     Direct(http3::client::SendRequest<http3_quic::OpenStreams, Bytes>),
     Cloned(http3::client::SendRequest<http3_quic::OpenStreams, Bytes>),
     Task(http3::client::SendRequest<http3_quic::OpenStreams, Bytes>),
@@ -409,7 +409,7 @@ async fn measure(
     client_endpoint.wait_idle().await;
     server_endpoint.wait_idle().await;
     let implementation = if proto {
-        "wreq-proto"
+        "hwire"
     } else if direct_tasks {
         "http3-task"
     } else if direct_clone {
