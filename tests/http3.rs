@@ -38,12 +38,12 @@ use std::{
 use bytes::{Buf, Bytes, BytesMut};
 use http::{HeaderMap, Request, Response, Version};
 use http_body_util::{BodyExt, Full};
-use tokio::{sync::oneshot, time::timeout};
-use wreq_proto::{
+use hwire::{
     conn::http3::{Builder, Connection, SendRequest},
     http3::Http3Options,
     rt::{bounds::Http3ClientConnExec, Executor},
 };
+use tokio::{sync::oneshot, time::timeout};
 
 #[derive(Clone, Copy)]
 struct Exec;
@@ -731,7 +731,7 @@ async fn connect_flush_and_half_close_preserve_incoming_bytes() {
             .await
             .unwrap();
         assert_eq!(response.status(), 200);
-        let mut tunnel = wreq_proto::upgrade::on(&mut response).await.unwrap();
+        let mut tunnel = hwire::upgrade::on(&mut response).await.unwrap();
         drop(tx);
         tunnel.write_all(&vec![9; 128 * 1024]).await.unwrap();
         tunnel.flush().await.unwrap();
@@ -988,15 +988,15 @@ fn datagram_request() -> Request<ClientBody> {
         .insert(http3::ext::Protocol::CONNECT_UDP);
     request
         .extensions_mut()
-        .insert(wreq_proto::conn::http3::datagram::DatagramRequest);
+        .insert(hwire::conn::http3::datagram::DatagramRequest);
     request
 }
 
 #[cfg(feature = "http3-datagram")]
 #[tokio::test]
 async fn datagram_sessions_route_by_stream_and_close_with_control() {
+    use hwire::conn::http3::datagram::{self, SendErrorKind};
     use tokio::io::AsyncWriteExt;
-    use wreq_proto::conn::http3::datagram::{self, SendErrorKind};
     bounded(async {
         let Pair {
             mut tx,
@@ -1155,13 +1155,9 @@ async fn invalid_datagram_on_ordinary_request(connect: bool) {
             .try_send_request(request.body(Full::new(Bytes::new())).unwrap())
             .await
             .unwrap();
-        assert!(wreq_proto::conn::http3::datagram::on(&mut canceled_response).is_none());
+        assert!(hwire::conn::http3::datagram::on(&mut canceled_response).is_none());
         let tunnel = if connect {
-            Some(
-                wreq_proto::upgrade::on(&mut canceled_response)
-                    .await
-                    .unwrap(),
-            )
+            Some(hwire::upgrade::on(&mut canceled_response).await.unwrap())
         } else {
             None
         };
@@ -1289,8 +1285,8 @@ async fn datagram_before_response_head_fails_request_and_releases_slot() {
 #[cfg(feature = "http3-datagram")]
 #[tokio::test]
 async fn datagram_unavailable_preserves_reliable_control_stream() {
+    use hwire::conn::http3::datagram::{self, SendErrorKind};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use wreq_proto::conn::http3::datagram::{self, SendErrorKind};
     bounded(async {
         let Pair {
             mut tx,
@@ -1793,7 +1789,7 @@ async fn canceling_handshake_waiting_for_control_stream_closes_quic() {
 
 #[tokio::test]
 async fn settings_order_and_configured_values_reach_upstream_server() {
-    use wreq_proto::http3::SettingId;
+    use hwire::http3::SettingId;
     bounded(async {
         for &native in &[
             false,

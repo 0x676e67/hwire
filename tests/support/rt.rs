@@ -8,8 +8,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use hwire::rt::{Executor, Sleep, Timer};
 use pin_project_lite::pin_project;
-use wreq_proto::rt::{Executor, Sleep, Timer};
 
 /// Future executor that utilises `tokio` threads.
 #[non_exhaustive]
