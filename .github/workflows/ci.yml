@@ -16,16 +16,19 @@ jobs:
     name: Style
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
           override: true
           components: rustfmt, clippy
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt
       - name: Style check
-        run: cargo fmt --all -- --check
+        run: cargo +nightly fmt --all -- --check
       - name: Clippy check
-        run: cargo clippy --all-features --tests --bins --lib -- -D warnings
+        run: cargo +stable clippy --all-features --tests --bins --lib -- -D warnings
 
   test:
     name: Test ${{ matrix.rust }} on ${{ matrix.os }}
@@ -55,7 +58,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Install Rust (${{ matrix.rust }})
         uses: dtolnay/rust-toolchain@master
@@ -79,7 +82,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -90,7 +93,7 @@ jobs:
 
       - name: Get MSRV from package metadata
         id: msrv
-        run: echo "version=$(yq '.workspace.package.rust-version' Cargo.toml)" >> $GITHUB_OUTPUT
+        run: echo "version=$(yq '.package.rust-version' Cargo.toml)" >> $GITHUB_OUTPUT
 
       - name: Install Rust (${{ steps.msrv.outputs.version }})
         uses: dtolnay/rust-toolchain@master
@@ -100,7 +103,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Check
-        run: cargo check --features full
+        run: cargo check --lib
+        env:
+          RUSTFLAGS: "-D warnings"
 
   miri:
     name: Test with Miri
@@ -109,7 +114,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@nightly
@@ -128,7 +133,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -142,27 +147,28 @@ jobs:
         env:
           RUSTFLAGS: "-D dead_code -D unused_imports"
         run: |
-          cargo check -p wreq-proto --no-default-features
-          cargo check -p wreq-rt --no-default-features
+          cargo check -p hwire --no-default-features
+          cargo check --no-default-features --features http3
+          cargo check --no-default-features --features http3-datagram
 
       - name: check --feature-powerset
         env:
           RUSTFLAGS: "-D dead_code -D unused_imports"
         run: |
-          cargo hack -p wreq-proto --no-dev-deps check --feature-powerset --depth 2 --skip tracing
+          cargo hack -p hwire --no-dev-deps check --feature-powerset --depth 2 --skip tracing
 
       - name: check --feature-powerset with tracing feature
         env:
           RUSTFLAGS: "-D dead_code -D unused_imports"
         run: |
-          cargo hack -p wreq-proto --no-dev-deps check --feature-powerset --depth 2 --features tracing
+          cargo hack -p hwire --no-dev-deps check --feature-powerset --depth 2 --features tracing
 
   udeps:
     needs: [style]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@nightly
