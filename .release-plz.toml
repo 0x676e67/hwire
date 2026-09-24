@@ -1,0 +1,14 @@
+[workspace]
+changelog_path = "./RELEASE.md"
+changelog_config = "./.cliff.toml"
+release_always = false
+publish = true
+git_release_enable = true
+git_release_generate_notes = true
+git_release_body = ""
+git_tag_enable = true
+git_tag_name = "{{ package }}-v{{ version }}"
+
+[[package]]
+name = "hwire"
+git_tag_name = "v{{ version }}"
