@@ -22,7 +22,7 @@ use tokio::net::{TcpListener, TcpStream};
 
 mod tokiort;
 #[allow(unused)]
-pub use tokiort::{TokioExecutor, TokioIo, TokioTimer};
+pub use tokiort::{TokioIo, TokioRuntime};
 
 pub mod header;
 pub mod rt;
@@ -391,7 +391,7 @@ async fn async_test(cfg: __TestConfig) {
 
             tokio::task::spawn(async move {
                 if http2_only {
-                    server::conn::http2::Builder::new(TokioExecutor)
+                    server::conn::http2::Builder::new(TokioRuntime)
                         .serve_connection(io, service)
                         .await
                         .expect("server error");
@@ -434,7 +434,7 @@ async fn async_test(cfg: __TestConfig) {
 
             let res = if http2_only {
                 let (mut sender, conn) =
-                    wreq_proto::conn::http2::Builder::new(rt::TokioExecutor::new())
+                    wreq_proto::conn::http2::Builder::new(rt::TokioRuntime::new())
                         .handshake(stream)
                         .await
                         .unwrap();
@@ -533,7 +533,7 @@ async fn naive_proxy(cfg: ProxyConfig) -> (SocketAddr, impl Future<Output = ()>)
 
                         let resp = if http2_only {
                             let (mut sender, conn) =
-                                wreq_proto::conn::http2::Builder::new(rt::TokioExecutor::new())
+                                wreq_proto::conn::http2::Builder::new(rt::TokioRuntime::new())
                                     .handshake(stream)
                                     .await
                                     .unwrap();
@@ -577,7 +577,7 @@ async fn naive_proxy(cfg: ProxyConfig) -> (SocketAddr, impl Future<Output = ()>)
                 let io = TokioIo::new(stream);
 
                 if http2_only {
-                    server::conn::http2::Builder::new(TokioExecutor)
+                    server::conn::http2::Builder::new(TokioRuntime)
                         .serve_connection(io, service)
                         .await
                         .unwrap();

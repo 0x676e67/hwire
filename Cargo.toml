@@ -15,7 +15,8 @@ rust-version = "1.85"
 
 [workspace.dependencies]
 tokio = { version = "1.52.3", default-features = false }
-wreq-proto = { path = "./wreq-proto", version = "0.2.5" }
+wreq-rt = { path = "./wreq-rt", default-features = false, version = "0.2.2-rc.4" }
+wreq-proto = { path = "./wreq-proto", default-features = false, version = "0.2.5" }
 
 [profile.release]
 codegen-units = 1

@@ -1,25 +1,26 @@
 #![allow(dead_code)]
 
-//! Tokio IO integration for core.
+//! Tokio runtime integration for core tests.
 use std::{
     future::Future,
+    net::{SocketAddr, TcpStream},
     pin::Pin,
     task::{Context, Poll},
     time::{Duration, Instant},
 };
 
 use pin_project_lite::pin_project;
-use wreq_proto::rt::{Executor, Sleep, Timer};
+use wreq_rt::{
+    conn::{Connect, Connecting},
+    dns::{DnsResolver, Resolving},
+    timer::{Sleep, Timer},
+    Executor,
+};
 
-/// Future executor that utilises `tokio` threads.
+/// A test runtime adapter backed by `tokio`.
 #[non_exhaustive]
 #[derive(Default, Debug, Clone)]
-pub struct TokioExecutor {}
-
-/// A Timer that uses the tokio runtime.
-#[non_exhaustive]
-#[derive(Default, Clone, Debug)]
-pub struct TokioTimer;
+pub struct TokioRuntime {}
 
 // Use TokioSleep to get tokio::time::Sleep to implement Unpin.
 // see https://docs.rs/tokio/latest/tokio/time/struct.Sleep.html
@@ -31,9 +32,9 @@ pin_project! {
     }
 }
 
-// ===== impl TokioExecutor =====
+// ===== impl TokioRuntime =====
 
-impl<Fut> Executor<Fut> for TokioExecutor
+impl<Fut> Executor<Fut> for TokioRuntime
 where
     Fut: Future + Send + 'static,
     Fut::Output: Send + 'static,
@@ -43,16 +44,31 @@ where
     }
 }
 
-impl TokioExecutor {
-    /// Create new executor that relies on [`tokio::spawn`] to execute futures.
+impl DnsResolver for TokioRuntime {
+    fn resolve(&self, _: Box<str>) -> Resolving {
+        unimplemented!()
+    }
+}
+
+impl Connect for TokioRuntime {
+    fn tcp_connect(&self, _: TcpStream, _: SocketAddr) -> Connecting {
+        unimplemented!()
+    }
+
+    #[cfg(unix)]
+    fn unix_connect(&self, _: std::sync::Arc<std::path::Path>) -> Connecting {
+        unimplemented!()
+    }
+}
+
+impl TokioRuntime {
+    /// Create a new [`TokioRuntime`].
     pub fn new() -> Self {
         Self {}
     }
 }
 
-// ==== impl TokioTimer =====
-
-impl Timer for TokioTimer {
+impl Timer for TokioRuntime {
     #[inline]
     fn sleep(&self, duration: Duration) -> Pin<Box<dyn Sleep>> {
         Box::pin(TokioSleep {
@@ -75,13 +91,6 @@ impl Timer for TokioTimer {
     #[inline]
     fn reset(&self, sleep: &mut Pin<Box<dyn Sleep>>, new_deadline: Instant) {
         sleep.as_mut().reset(new_deadline);
-    }
-}
-
-impl TokioTimer {
-    /// Create a new TokioTimer
-    pub fn new() -> Self {
-        Self {}
     }
 }
 

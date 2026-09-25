@@ -12,10 +12,10 @@ mod h2_client {
 
     use crate::{error::BoxError, proto::http2::client::H2ClientFuture, rt::Executor};
 
-    /// An executor to spawn http2 futures for the client.
+    /// An executor for HTTP/2 client futures.
     ///
     /// This trait is implemented for any type that implements [`Executor`]
-    /// trait for any future.
+    /// for the corresponding future type.
     ///
     /// This trait is sealed and cannot be implemented for types outside this crate.
     pub trait Http2ClientConnExec<B, T>: sealed_client::Sealed<(B, T)>

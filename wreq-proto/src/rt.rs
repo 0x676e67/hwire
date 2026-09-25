@@ -8,14 +8,8 @@
 //! - IO transports
 
 pub mod bounds;
-mod timer;
 
-pub use self::timer::{Sleep, Time, Timer};
-
-/// An executor of futures.
-///
-/// This trait allows abstract over async runtimes. Implement this trait for your own type.
-pub trait Executor<Fut> {
-    /// Place the future into the executor to be run.
-    fn execute(&self, fut: Fut);
-}
+pub(crate) use wreq_rt::{
+    timer::{Sleep, Time, Timer},
+    Executor,
+};

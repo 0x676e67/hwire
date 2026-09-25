@@ -12,10 +12,10 @@ use hyper::rt::{Sleep, Timer};
 use pin_project_lite::pin_project;
 
 #[derive(Clone)]
-/// An Executor that uses the tokio runtime.
-pub struct TokioExecutor;
+/// A Hyper test runtime adapter backed by `tokio`.
+pub struct TokioRuntime;
 
-impl<F> hyper::rt::Executor<F> for TokioExecutor
+impl<F> hyper::rt::Executor<F> for TokioRuntime
 where
     F: std::future::Future + Send + 'static,
     F::Output: Send + 'static,
@@ -25,12 +25,7 @@ where
     }
 }
 
-/// A Timer that uses the tokio runtime.
-
-#[derive(Clone, Debug)]
-pub struct TokioTimer;
-
-impl Timer for TokioTimer {
+impl Timer for TokioRuntime {
     fn sleep(&self, duration: Duration) -> Pin<Box<dyn Sleep>> {
         Box::pin(TokioSleep {
             inner: tokio::time::sleep(duration),
@@ -51,13 +46,6 @@ impl Timer for TokioTimer {
         if let Some(sleep) = sleep.as_mut().downcast_mut_pin::<TokioSleep>() {
             sleep.reset(new_deadline)
         }
-    }
-}
-
-impl TokioTimer {
-    /// Create a new TokioTimer
-    pub fn new() -> Self {
-        Self {}
     }
 }
 

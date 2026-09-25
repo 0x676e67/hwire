@@ -50,7 +50,7 @@ pub struct Parts<T> {
 
 /// A future that processes all HTTP state for the IO object.
 ///
-/// In most cases, this should just be spawned into an executor, so that it
+/// In most cases, this should just be spawned onto a runtime, so that it
 /// can process incoming and outgoing messages, notice hangups, and the like.
 #[must_use = "futures do nothing unless polled"]
 pub struct Connection<T, B>

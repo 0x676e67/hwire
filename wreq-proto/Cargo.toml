@@ -39,6 +39,7 @@ futures-util = { version = "0.3.32", default-features = false }
 smallvec = { version = "1.15.1", features = ["const_generics", "const_new"] }
 tokio = { workspace = true, default-features = false }
 tokio-util = { version = "0.7.18", default-features = false }
+wreq-rt = { workspace = true, default-features = false }
 
 # Optional deps...
 

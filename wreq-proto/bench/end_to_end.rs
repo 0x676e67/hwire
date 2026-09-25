@@ -314,7 +314,7 @@ impl Opts {
             if self.http2 {
                 let tcp = tokio::net::TcpStream::connect(&addr).await.unwrap();
 
-                let (tx, conn) = wreq_proto::conn::http2::Builder::new(rt::TokioExecutor::new())
+                let (tx, conn) = wreq_proto::conn::http2::Builder::new(rt::TokioRuntime::new())
                     .options(
                         Http2Options::builder()
                             .initial_window_size(self.http2_stream_window)
@@ -422,7 +422,7 @@ fn spawn_server(rt: &tokio::runtime::Runtime, opts: &Opts) -> SocketAddr {
             let io = tokiort::TokioIo::new(sock);
             if opts.http2 {
                 tokio::spawn(
-                    hyper::server::conn::http2::Builder::new(tokiort::TokioExecutor)
+                    hyper::server::conn::http2::Builder::new(tokiort::TokioRuntime)
                         .initial_stream_window_size(opts.http2_stream_window)
                         .initial_connection_window_size(opts.http2_conn_window)
                         .adaptive_window(opts.http2_adaptive_window)
